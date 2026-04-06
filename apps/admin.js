@@ -1,6 +1,8 @@
 import { Config, Render, Version, Common } from '../module/utils/index.js'
 import { bilibiliLogin } from '../module/platform/bilibili/login.js'
 // import { dylogin } from '../module/platform/douyin/login.js'
+import { bilibiliDB } from '../module/db/index.js'
+import { douyinDB } from '../module/db/index.js'
 import fs from 'fs'
 
 const APPType = {
@@ -171,6 +173,16 @@ export class kkkAdmin extends plugin {
           reg: /^#?kkk删除缓存$/,
           fnc: 'deltemp',
           permission: 'master'
+        },
+        {
+          reg: /^#?kkk清空b站动态缓存$/,
+          fnc: 'clearBilibiliCache',
+          permission: 'master'
+        },
+        {
+          reg: /^#?kkk清空抖音动态缓存$/,
+          fnc: 'clearDouyinCache',
+          permission: 'master'
         }
       ]
     })
@@ -188,10 +200,54 @@ export class kkkAdmin extends plugin {
   }
 
   async deltemp() {
-    await removeAllFiles(Common.tempDri.video)
-      .then(() => logger.warn(Common.tempDri.video + '所有文件已删除'))
-      .catch((err) => logger.error('删除文件时出错:', err))
+    try {
+      await removeAllFiles(Common.tempDri.video)
+      logger.warn(Common.tempDri.video + '所有视频缓存已删除')
+      // 使用 this.e.reply 而不是 e.reply，以防参数未传递
+      if (this.e) {
+        await this.e.reply(Common.tempDri.video + '所有视频缓存已删除')
+      }
+    } catch (err) {
+      logger.error('删除视频缓存时出错:', err)
+      if (this.e) {
+        await this.e.reply('删除视频缓存时出错')
+      }
+    }
     return true
+  }
+
+  async clearBilibiliCache() {
+    try {
+      // 1. 获取所有的缓存记录数量（可选，用于提示）
+      const countResult = await bilibiliDB.getQuery('SELECT COUNT(*) as count FROM DynamicCaches');
+      const count = countResult?.count || 0;
+
+      // 2. 执行删除表内所有数据的 SQL
+      await bilibiliDB.runQuery('DELETE FROM DynamicCaches');
+
+      await this.e.reply(`已成功清空 B 站动态推送历史缓存！\n共清理 ${count} 条记录。\n下次轮询时，最近一天内的所有新动态将被重新推送。`);
+    } catch (err) {
+      logger.error('清空 B 站动态缓存失败:', err);
+      await this.e.reply('清空失败，请查看控制台日志。');
+    }
+    return true;
+  }
+
+  async clearDouyinCache() {
+    try {
+      // 1. 获取所有的缓存记录数量（将 DynamicCaches 改为 AwemeCaches）
+      const countResult = await douyinDB.getQuery('SELECT COUNT(*) as count FROM AwemeCaches');
+      const count = countResult?.count || 0;
+
+      // 2. 执行删除表内所有数据的 SQL（将 DynamicCaches 改为 AwemeCaches）
+      await douyinDB.runQuery('DELETE FROM AwemeCaches');
+
+      await this.e.reply(`已成功清空抖音动态推送历史缓存！\n共清理 ${count} 条记录。\n下次轮询时，最近一天内的所有新作品将被重新推送。`);
+    } catch (err) {
+      logger.error('清空抖音动态缓存失败:', err);
+      await this.e.reply('清空失败，请查看控制台日志。');
+    }
+    return true;
   }
 
   async ConfigSwitch(e) {
