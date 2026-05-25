@@ -36,11 +36,21 @@ import fetch from 'node-fetch'
  * @param {boolean} [log=true] 是否记录日志
  * @returns {Promise<BilibiliId>}
  */
+// 替换后：
 export const getBilibiliID = async (url, log = true) => {
   /** @type {BilibiliId} */
-  let result = { type: 'undefined' }
-  let longLink = ''
+  let result = { type: "undefined" }
+  let longLink = ""
   try {
+    // 【新增】利用正则精准提取真实的 HTTP/HTTPS 链接，过滤掉 "链接: " 等多余干扰字符
+    const urlMatch = url.match(/(https?:\/\/[^\s]+)/)
+    if (urlMatch) {
+      url = urlMatch[1]
+    } else {
+      if (log) logger.warn(`[B站链接] 未找到有效的网址: ${url}`)
+      return result
+    }
+
     // 获取长链接
     longLink = await new Networks({
       url,
