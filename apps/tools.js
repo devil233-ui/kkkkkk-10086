@@ -3,6 +3,7 @@ import { Bilibili, getBilibiliID } from '../module/platform/bilibili/index.js'
 import { DouYin, getDouyinID } from '../module/platform/douyin/index.js'
 import { Config, Common, UploadRecord } from '../module/utils/index.js'
 import { getDouyinData } from '@ikenxuan/amagi'
+import { QRCodeScanner } from '../module/utils/QRCodeScanner.js';
 
 // 用户状态存储对象
 const user = {}
@@ -58,15 +59,114 @@ export class kkkTools extends plugin {
    */
   async prefix(e) {
     try {
-      e.msg = await Common.getReplyMessage(e)
-      // 查找匹配的平台并直接调用处理函数
-      const config = PLATFORM_CONFIG.find(config => config.reg.test(e.msg))
-      if (config) await this[config.handler](e)
-    } catch (e) {
-      logger.error('kkk解析链接失败', e)
-      return false
+      let qrMatched = false;
+      let imageUrl = "";
+
+      // ====== 1. 优先检查当前消息本身是否带了图片 ======
+      if (e.message && Array.isArray(e.message)) {
+        for (const item of e.message) {
+          if (item.type === "image" || item.type === "Image") {
+            // 兼容扁平结构和 OneBot 标准嵌套结构
+            imageUrl = item.url || item.file || item.data?.url || item.data?.file;
+            break;
+          }
+        }
+      }
+
+      // ====== 2. 如果没带图，去获取引用消息里的图片 ======
+      if (!imageUrl && (e.source || e.hasReply || e.reply_id || (e.message && e.message.some(m => m.type === "reply")))) {
+        let replyMsg = null;
+
+        // 尝试 1：通过框架封装的 getReply()
+        if (typeof e.getReply === "function") {
+          try { replyMsg = await e.getReply(); } catch (err) {}
+        }
+
+        // 尝试 2：终极杀招，利用 Bot 原生 API 强行抓取那条完整的历史消息
+        if (!replyMsg || !replyMsg.message) {
+          let replyId = e.reply_id;
+          if (!replyId && e.source) replyId = e.source.message_id || e.source.id || e.source.seq;
+          if (!replyId && e.message) {
+            const replySeg = e.message.find(m => m.type === "reply");
+            if (replySeg) replyId = replySeg.id;
+          }
+
+          if (replyId && e.bot && typeof e.bot.getMsg === "function") {
+            try {
+              replyMsg = await e.bot.getMsg(replyId);
+            } catch (err) {
+              logger.debug("[引用解析] API拉取原始消息失败");
+            }
+          }
+        }
+
+        // 保底：如果还没取到，用 e.source
+        if (!replyMsg) replyMsg = e.source;
+
+        // 万能递归提取工具：通杀字符串CQ码、对象、数组，以及 OneBot 原生 data 嵌套结构
+        const extractFromReply = (msg) => {
+          if (!msg) return "";
+          if (typeof msg === "string") {
+            const cqMatch = msg.match(/\[CQ:image,.*?url=([^,\]]+)/);
+            return cqMatch ? cqMatch[1].replace(/&amp;/g, "&") : "";
+          } 
+          if (Array.isArray(msg)) {
+            for (const item of msg) {
+              if (item.type === "image" || item.type === "Image") {
+                return item.url || item.file || item.data?.url || item.data?.file;
+              }
+              const nested = extractFromReply(item);
+              if (nested) return nested;
+            }
+          } 
+          if (typeof msg === "object") {
+            if (msg.type === "image" || msg.type === "Image") {
+              return msg.url || msg.file || msg.data?.url || msg.data?.file;
+            }
+            return extractFromReply(msg.message) || extractFromReply(msg.elements);
+          }
+          return "";
+        };
+
+        imageUrl = extractFromReply(replyMsg);
+      }
+
+      // ====== 3. 开始执行核心扫码逻辑 ======
+      if (imageUrl) {
+        if (!imageUrl.startsWith("http")) {
+          logger.warn(`[引用解析] 提取到了图片名但没有直链，无法扫描: ${imageUrl}`);
+        } else {
+          logger.mark(`[引用解析] 成功提取到图片直链，开始扫描二维码...`);
+          const qrContent = await QRCodeScanner.scanFromUrl(imageUrl);
+          
+          if (qrContent && QRCodeScanner.isSupportedPlatform(qrContent)) {
+            logger.mark(`[引用解析] 二维码识别成功: ${qrContent}`);
+            e.msg = qrContent; // 伪装成手发的链接
+            qrMatched = true;
+          } else if (qrContent) {
+            logger.warn(`[引用解析] 识别到二维码，但不支持该平台: ${qrContent}`);
+          } else {
+            logger.warn(`[引用解析] 未识别到二维码或图片被过度压缩`);
+          }
+        }
+      }
+
+      // ====== 4. 退回原来的流程 ======
+      if (!qrMatched) {
+        e.msg = await Common.getReplyMessage(e) || e.msg;
+      }
+
+      const config = PLATFORM_CONFIG.find(config => config.reg.test(e.msg));
+      if (config) {
+        await this[config.handler](e);
+      } else {
+        logger.debug("[kkk解析] 未匹配到支持的解析链接");
+      }
+    } catch (error) {
+      logger.error("kkk解析链接失败", error);
+      return false;
     }
-    return true
+    return true;
   }
 
   /**
