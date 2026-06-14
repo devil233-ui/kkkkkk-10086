@@ -71,14 +71,14 @@ export class DouYin extends Base {
       Config.douyin.douyinTip?.includes('提示信息') && this.e.reply('检测到抖音链接，开始解析')
       switch (this.type) {
         case 'one_work': {
-          const VideoData = await this.amagi.getDouyinData('聚合解析', {
+          const VideoData = await this.amagi.douyin.fetcher.fetchVideoWork({
             aweme_id: data.aweme_id,
-            typeMode: 'strict'
+            typeMode: "strict"
           })
-          const CommentsData = await this.amagi.getDouyinData('评论数据', {
+          const CommentsData = await this.amagi.douyin.fetcher.fetchWorkComments({
             aweme_id: data.aweme_id,
-            number: Config.douyin.numcomments,
-            typeMode: 'strict'
+            count: Config.douyin.numcomments,
+            typeMode: "strict"
           })
           this.is_slides = VideoData.data.aweme_detail.is_slides === true
           let g_video_url = ''
@@ -236,23 +236,15 @@ export class DouYin extends Base {
               分享链接：${logger.green(VideoData.data.aweme_detail.share_url)}
               `)
               video.bit_rate = douyinProcessVideos(video.bit_rate, Config.upload.filelimit || 100)
-              g_video_url = await new Networks({
-                url: video.bit_rate[0].play_addr.url_list[2],
-                headers: {
-                  ...this.headers,
-                  Referer: video.bit_rate[0].play_addr.url_list[0],
-                  Cookie: ''
-                }
-              }).getLongLink()
+              // 🚨 直接取 CDN 直链，砍掉容易 abort 的 getLongLink()
+              g_video_url = video.bit_rate[0].play_addr.url_list[0] || video.bit_rate[0].play_addr.url_list[2]
             } else {
-              g_video_url = await new Networks({
-                url: video.play_addr_h264.url_list[2] || video.play_addr_h264.url_list[2],
-                headers: {
-                  ...this.headers,
-                  Referer: video.play_addr_h264.url_list[0] || video.play_addr_h264.url_list[0],
-                  Cookie: ''
-                }
-              }).getLongLink()
+              g_video_url = video.play_addr_h264.url_list[0] || video.play_addr_h264.url_list[2]
+            }
+
+            // 兜底链接保护
+            if (!g_video_url) {
+              g_video_url = `https://aweme.snssdk.com/aweme/v1/play/?video_id=${video.play_addr.uri}&ratio=1080p&line=0`
             }
             const cover = video.origin_cover.url_list[0] || '' // video cover image
 
@@ -283,8 +275,10 @@ export class DouYin extends Base {
               },
               headers: {
                 ...baseHeaders,
-                Referer: g_video_url,
-                Cookies: ''
+                // 🚨 核心修复：强制伪装电脑端 UA，设置正确的防盗链 Referer，修复 Cookies 拼写错误
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                Referer: 'https://www.douyin.com/',
+                Cookie: ''
               }
             },
             {
@@ -293,7 +287,7 @@ export class DouYin extends Base {
           )
 
           if ((Config.douyin.douyinTip)?.includes('评论图')) {
-            const EmojiData = await this.amagi.getDouyinData('Emoji数据', { typeMode: 'strict' })
+            const EmojiData = await this.amagi.douyin.fetcher.fetchEmojiList({ typeMode: "strict" })
             const list = Emoji(EmojiData.data)
             const commentsArray = await douyinComments(CommentsData, list)
             if (!commentsArray?.jsonArray?.length) {
@@ -321,16 +315,17 @@ export class DouYin extends Base {
 
         case 'user_dynamic': {
           /** @type {*} */
-          const UserVideoListData = await this.amagi.getDouyinData('用户主页视频列表数据', {
+          const UserVideoListData = await this.amagi.douyin.fetcher.fetchUserVideoList({
             sec_uid: data.sec_uid,
-            typeMode: 'strict'
+            typeMode: "strict"
           })
 
           const veoarray = []
-          veoarray.unshift('------------------------------ | ---------------------------- |\n')
-          veoarray.unshift('标题                           | 分享二维码                    |\n')
+          veoarray.unshift("------------------------------ | ---------------------------- |\n")
+          veoarray.unshift("标题                           | 分享二维码                    |\n")
           const forwardmsg = []
-          for (const i of UserVideoListData.aweme_list) {
+          const aweme_list = UserVideoListData.data?.aweme_list || UserVideoListData.aweme_list || []
+          for (const i of aweme_list) {
             const title = i.desc
             const cover = i.share_url
             veoarray.push(`${title}       | ![img](${await QRCode.toDataURL(cover, {
@@ -354,12 +349,12 @@ export class DouYin extends Base {
           return true
         }
         case 'music_work': {
-          const MusicData = await this.amagi.getDouyinData('音乐数据', {
+          const MusicData = await this.amagi.douyin.fetcher.fetchMusicInfo({
             music_id: data.music_id,
-            typeMode: 'strict'
+            typeMode: "strict"
           })
           const sec_uid = MusicData.data.music_info.sec_uid
-          const UserData = await this.amagi.getDouyinData('用户主页数据', { sec_uid, typeMode: 'strict' })
+          const UserData = await this.amagi.douyin.fetcher.fetchUserProfile({ sec_uid, typeMode: "strict" })
           // if (userdata.status_code === 2) {
           //   const new_userdata = await getDouyinData('搜索数据', { query: data.music_info.author })
           //   if (new_userdata.data[0].type === 4 && new_userdata.data[0].card_unique_name === 'user') {
@@ -403,13 +398,13 @@ export class DouYin extends Base {
           return true
         }
         case 'live_room_detail': {
-          const UserInfoData = await this.amagi.getDouyinData('用户主页数据', {
+          const UserInfoData = await this.amagi.douyin.fetcher.fetchUserProfile({
             sec_uid: data.sec_uid,
-            typeMode: 'strict'
+            typeMode: "strict"
           })
           if (UserInfoData.data.user.live_status === 1) {
             // 直播中
-            const live_data = await this.amagi.getDouyinData('直播间信息数据', { sec_uid: UserInfoData.data.user.sec_uid, typeMode: 'strict' })
+            const live_data = await this.amagi.douyin.fetcher.fetchLiveRoomInfo({ sec_uid: UserInfoData.data.user.sec_uid, typeMode: "strict" })
             const room_data = JSON.parse(UserInfoData.data.user.room_data)
             const img = await Render('douyin/live',
               {

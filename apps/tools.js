@@ -59,30 +59,35 @@ export class kkkTools extends plugin {
    */
   async prefix(e) {
     try {
-      let qrMatched = false;
+      // ====== 1. 先尝试获取文本内容 ======
+      e.msg = await Common.getReplyMessage(e) || e.msg;
+
+      // ====== 2. 检查文本中是否已经包含有效链接 ======
+      let matchedConfig = PLATFORM_CONFIG.find(config => config.reg.test(e.msg));
+      
+      if (matchedConfig) {
+        logger.mark(`[引用解析] 消息中已包含有效链接，跳过二维码扫描`);
+        await this[matchedConfig.handler](e);
+        return true; // 直接结束，不浪费时间扫码
+      }
+
+      // ====== 3. 如果文本没链接，再去找图片扫码 ======
       let imageUrl = "";
 
-      // ====== 1. 优先检查当前消息本身是否带了图片 ======
       if (e.message && Array.isArray(e.message)) {
         for (const item of e.message) {
           if (item.type === "image" || item.type === "Image") {
-            // 兼容扁平结构和 OneBot 标准嵌套结构
             imageUrl = item.url || item.file || item.data?.url || item.data?.file;
             break;
           }
         }
       }
 
-      // ====== 2. 如果没带图，去获取引用消息里的图片 ======
       if (!imageUrl && (e.source || e.hasReply || e.reply_id || (e.message && e.message.some(m => m.type === "reply")))) {
         let replyMsg = null;
-
-        // 尝试 1：通过框架封装的 getReply()
         if (typeof e.getReply === "function") {
           try { replyMsg = await e.getReply(); } catch (err) {}
         }
-
-        // 尝试 2：终极杀招，利用 Bot 原生 API 强行抓取那条完整的历史消息
         if (!replyMsg || !replyMsg.message) {
           let replyId = e.reply_id;
           if (!replyId && e.source) replyId = e.source.message_id || e.source.id || e.source.seq;
@@ -90,20 +95,12 @@ export class kkkTools extends plugin {
             const replySeg = e.message.find(m => m.type === "reply");
             if (replySeg) replyId = replySeg.id;
           }
-
           if (replyId && e.bot && typeof e.bot.getMsg === "function") {
-            try {
-              replyMsg = await e.bot.getMsg(replyId);
-            } catch (err) {
-              logger.debug("[引用解析] API拉取原始消息失败");
-            }
+            try { replyMsg = await e.bot.getMsg(replyId); } catch (err) {}
           }
         }
-
-        // 保底：如果还没取到，用 e.source
         if (!replyMsg) replyMsg = e.source;
 
-        // 万能递归提取工具：通杀字符串CQ码、对象、数组，以及 OneBot 原生 data 嵌套结构
         const extractFromReply = (msg) => {
           if (!msg) return "";
           if (typeof msg === "string") {
@@ -127,11 +124,9 @@ export class kkkTools extends plugin {
           }
           return "";
         };
-
         imageUrl = extractFromReply(replyMsg);
       }
 
-      // ====== 3. 开始执行核心扫码逻辑 ======
       if (imageUrl) {
         if (!imageUrl.startsWith("http")) {
           logger.warn(`[引用解析] 提取到了图片名但没有直链，无法扫描: ${imageUrl}`);
@@ -141,8 +136,14 @@ export class kkkTools extends plugin {
           
           if (qrContent && QRCodeScanner.isSupportedPlatform(qrContent)) {
             logger.mark(`[引用解析] 二维码识别成功: ${qrContent}`);
-            e.msg = qrContent; // 伪装成手发的链接
-            qrMatched = true;
+            e.msg = qrContent;
+            
+            // 扫码成功后，重新匹配平台配置并执行
+            matchedConfig = PLATFORM_CONFIG.find(config => config.reg.test(e.msg));
+            if (matchedConfig) {
+              await this[matchedConfig.handler](e);
+              return true;
+            }
           } else if (qrContent) {
             logger.warn(`[引用解析] 识别到二维码，但不支持该平台: ${qrContent}`);
           } else {
@@ -151,17 +152,8 @@ export class kkkTools extends plugin {
         }
       }
 
-      // ====== 4. 退回原来的流程 ======
-      if (!qrMatched) {
-        e.msg = await Common.getReplyMessage(e) || e.msg;
-      }
-
-      const config = PLATFORM_CONFIG.find(config => config.reg.test(e.msg));
-      if (config) {
-        await this[config.handler](e);
-      } else {
-        logger.debug("[kkk解析] 未匹配到支持的解析链接");
-      }
+      logger.debug("[kkk解析] 未匹配到支持的解析链接");
+      
     } catch (error) {
       logger.error("kkk解析链接失败", error);
       return false;

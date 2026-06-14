@@ -2,6 +2,7 @@ import { Base, baseHeaders, Networks, Render, Config, Common, downloadVideo, Ver
 import { cleanOldDynamicCache, douyinDB } from '../../db/index.js'
 import { getDouyinID, douyinProcessVideos } from './index.js'
 import common from '../../../../../lib/common/common.js'
+// import { douyinFetcher } from "@ikenxuan/amagi"
 
 /**
  * @typedef {import('@ikenxuan/amagi').ApiResponse} ApiResponse
@@ -212,18 +213,29 @@ export class DouYinpush extends Base {
                             const { groupId, botId } = target
                             let status = { message_id: '' }
                             if (!skip) {
-                                // 发送消息,如果bot不存在或群组不存在,则默认message_id为1,防止bot上线发一堆消息
-                                status = Bot?.[botId]?.pickGroup(groupId)
-                                    ? img && await Bot[botId].pickGroup(groupId).sendMsg(img)
-                                    : (logger.warn(`bot${botId}不存在或群${groupId}不存在`), { message_id: '1' })
+                                // ====== 修复：独立包裹卡片发送，防止其假超时中断后续视频解析 ======
+                                try {
+                                    status = Bot?.[botId]?.pickGroup(groupId)
+                                        ? img && await Bot[botId].pickGroup(groupId).sendMsg(img)
+                                        : (logger.warn(`bot${botId}不存在或群${groupId}不存在`), { message_id: '1' })
+                                } catch (imgError) {
+                                    const errStr = JSON.stringify(imgError) + String(imgError);
+                                    if (errStr.includes('Timeout') && errStr.includes('sendMsg')) {
+                                        logger.warn(`[Douyin Push] 动态卡片发送超时，大概率已送达，跳过报错继续执行视频/图集解析`);
+                                        status = { message_id: 'fake_success' }; // 伪造一个 message_id 以便让下面的视频解析能通过 if (status.message_id) 的判断
+                                    } else {
+                                        throw imgError; // 真实报错，抛出给外层彻底中断本次推送
+                                    }
+                                }
+                                // =================================================================
 
                                 // 如果是直播推送，更新直播状态
                                 if (pushItem.living && 'room_data' in pushItem.Detail_Data && status.message_id) {
                                     await douyinDB?.updateLiveStatus(pushItem.sec_uid, true)
                                 }
 
-                                // 是否一同解析该新作品？
-                                if (Config.douyin?.push?.parsedynamic && status.message_id) {
+                                // 2. 是否一同解析该新作品？(拦截因为群/bot不存在而返回的假id)
+                                if (Config.douyin?.push?.parsedynamic && status.message_id && status.message_id !== "1") {
                                     // 如果新作品是视频
                                     if (iddata.is_mp4) {
                                         try {
@@ -236,6 +248,7 @@ export class DouYinpush extends Base {
                       视频ID：${logger.green(Detail_Data.aweme_id)}\n
                       分享链接：${logger.green(Detail_Data.share_url)}
                       `)
+                                                const bitRate = Detail_Data.video?.bit_rate || [];
                                                 const videoObj = douyinProcessVideos(Detail_Data.video.bit_rate, Config.upload.filelimit || 100)
                                                 downloadUrl = await new Networks({
                                                     url: videoObj?.[0]?.play_addr?.url_list?.[0] || '',
@@ -245,15 +258,15 @@ export class DouYinpush extends Base {
                                                     }
                                                 }).getLongLink()
                                             } else {
+                                                // 全部加上 ?. 可选链保护
                                                 downloadUrl = await new Networks({
-                                                    url: Detail_Data.video.bit_rate[0].play_addr.url_list[0] || Detail_Data.video.play_addr_h264.url_list[0] || Detail_Data.video.play_addr_h264.url_list[0],
-                                                    headers: {
-                                                        ...douyinBaseHeaders,
-                                                        Cookie: ''
-                                                    }
-                                                }).getLongLink()
+                                                    url: Detail_Data.video?.bit_rate?.[0]?.play_addr?.url_list?.[0] || Detail_Data.video?.play_addr_h264?.url_list?.[0] || Detail_Data.video?.play_addr?.url_list?.[0] || downloadUrl,
+                                                    headers: { ...douyinBaseHeaders, Cookie: "" }
+                                                }).getLongLink();
                                             }
                                             // 下载视频
+                                            logger.mark(`[Douyin Push] 正在后台下载并发送视频: ${Detail_Data.desc}.mp4 ...`);
+
                                             await downloadVideo(this.e, {
                                                 video_url: downloadUrl,
                                                 title: { timestampTitle: `tmp_${Date.now()}.mp4`, originTitle: `${Detail_Data.desc}.mp4` },
@@ -263,6 +276,7 @@ export class DouYinpush extends Base {
                                                     Cookie: ''
                                                 }
                                             }, { active: true, activeOption: { uin: botId, group_id: groupId } })
+                                            logger.mark(`[Douyin Push] 视频 ${Detail_Data.desc}.mp4 下载并发送完毕！`);
                                         } catch (error) {
                                             logger.error(error)
                                         }
@@ -291,9 +305,9 @@ export class DouYinpush extends Base {
                             }
                         } catch (error) {
                             const errStr = JSON.stringify(error) + String(error);
-                            if (errStr.includes('Timeout') && errStr.includes('sendMsg')) {
-                                logger.warn(`[Douyin Push] 作品${awemeId}底层返回超时，但大概率已送达，标记为成功以防重复推送`);
-                                sendSuccess = true;
+                            if (errStr.includes("Timeout") && errStr.includes("sendMsg")) {
+                                logger.warn(`[Douyin Push] 作品${awemeId}发送超时，真实情况可能未送达群聊，标记为失败等待下一轮重试`);
+                                sendSuccess = false; // <--- 遇到超时老老实实标记为失败
                             } else {
                                 logger.error(`[Douyin Push] 发送${awemeId}真实失败(网络断开等)，取消写入数据库:`, error);
                                 if (this.e && this.e.reply) await this.e.reply(`抖音推送异常：发送${dynamicId}失败(渲染异常、网络断开等)，取消写入数据库:\n${error}`);
@@ -327,116 +341,122 @@ export class DouYinpush extends Base {
      * @returns {Promise<WillBePushList>} 将要推送的列表
      */
     async getDynamicList(userList) {
-        /** @type {WillBePushList} */
-        const willbepushlist = {} // 初始化将要推送的列表对象
+        const willbepushlist = {} 
 
         try {
-            /** 过滤掉不启用的订阅项 */
             const filteredUserList = userList.filter(item => item.switch !== false)
             for (const item of filteredUserList) {
-                const sec_uid = item.sec_uid
-                logger.debug(`开始获取用户：${item.remark}（${sec_uid}）的主页作品列表`)
-                const videolist = await this.amagi.getDouyinData('用户主页视频列表数据', { sec_uid, typeMode: 'strict' })
-                const userinfo = await this.amagi.getDouyinData('用户主页数据', { sec_uid, typeMode: 'strict' })
+                // 加一层 try-catch，防止某一个博主解析失败导致后面的全军覆没
+                try {
+                    const sec_uid = item.sec_uid
+                    logger.debug(`[Douyin Push] 开始获取博主：${item.remark || '未知'} 的最新作品...`)
+                    
+                    // 🚨 修复 1：增加 count 参数，防止抖音返回空数组
+                    const videolist = await this.amagi.douyin.fetcher.fetchUserVideoList({
+                        sec_uid: sec_uid,
+                        count: 20,
+                        max_cursor: "0",
+                        typeMode: "strict"
+                    }).catch(e => {
+                        logger.error(`[Douyin Push] 获取视频列表失败:`, e);
+                        return {};
+                    })
+                    
+                    const userinfo = await this.amagi.douyin.fetcher.fetchUserProfile({ sec_uid, typeMode: 'strict' }).catch(() => ({}))
 
-                const targets = item.group_id.map(groupWithBot => {
-                    const [groupId = '', botId = ''] = groupWithBot.split(':')
-                    return { groupId, botId }
-                }).filter(target => target.groupId && target.botId)
+                    // 🚨 修复 2：完美兼容旧版配置文件 (如果没有 :botId 后缀，自动使用当前 bot)
+                    const targets = item.group_id.map(groupWithBot => {
+                        const parts = String(groupWithBot).split(':')
+                        const groupId = parts[0]
+                        const botId = parts[1] || this.e?.self_id || (global.Bot && Object.keys(global.Bot)[0]) || ''
+                        return { groupId, botId }
+                    }).filter(target => target.groupId)
 
+                    if (targets.length === 0) {
+                        logger.warn(`[Douyin Push] 博主 ${item.remark} 没有有效的订阅群组(跳过)`);
+                        continue
+                    }
 
-                // 如果没有订阅群组，跳过该用户
-                if (targets.length === 0) continue
+                    // 🚨 修复 3：深度解构，兼容各种数据嵌套层级
+                    const aweme_list = videolist?.data?.data?.aweme_list || videolist?.data?.aweme_list || videolist?.aweme_list || []
+                    const userData = userinfo?.data?.data?.user || userinfo?.data?.user || userinfo?.user || {}
 
-                // 处理视频列表
-                if (videolist.data.aweme_list.length > 0) {
-                    for (const aweme of videolist.data.aweme_list) {
-                        logger.debug(`开始处理作品：${aweme.aweme_id}`)
-                        const now = Date.now()
-                        const createTime = aweme.create_time * 1000
-                        const timeDifference = now - createTime // 时间差，单位毫秒
-                        const is_top = aweme.is_top === 1 // 是否为置顶
-                        let shouldPush = false
+                    if (aweme_list.length === 0) {
+                        logger.warn(`[Douyin Push] 博主 ${item.remark} 的作品列表为空，可能被风控或近期无作品`);
+                    }
 
-                        const timeDiffSeconds = Math.round(timeDifference / 1000)
-                        const timeDiffHours = Math.round((timeDifference / 1000 / 60 / 60) * 100) / 100 // 保留2位小数
+                    // 处理视频列表
+                    if (aweme_list.length > 0) {
+                        for (const aweme of aweme_list) {
+                            const now = Date.now()
+                            // 兼容 10 位(秒)和 13 位(毫秒)的时间戳
+                            const createTime = String(aweme.create_time).length === 10 ? aweme.create_time * 1000 : aweme.create_time
+                            const timeDifference = now - createTime 
+                            const is_top = aweme.is_top === 1 
+                            let shouldPush = false
 
-                        logger.debug(`
-              前期获取该作品基本信息：
-              作者：${aweme.author.nickname}
-              作品ID：${aweme.aweme_id}
-              发布时间：${Common.convertTimestampToDateTime(aweme.create_time)}
-              发布时间戳（s）：${aweme.create_time}
-              当前时间戳（ms）：${now}
-              时间差（ms）：${timeDifference} ms (${timeDiffSeconds}s) (${timeDiffHours}h)
-              是否置顶：${is_top}
-              是否处于开播：${userinfo.data.user?.live_status === 1 ? logger.green('true') : logger.red('false')}
-              是否在一天内：${timeDifference < 86400000 ? logger.green('true') : logger.red('false')}
-              `)
+                            // 判断是否在 24 小时 (86400000 ms) 内
+                            if ((is_top && timeDifference < 86400000) || (timeDifference < 86400000 && !is_top)) {
+                                const groupIds = targets.map(t => t.groupId)
+                                const alreadyPushed = await this.checkIfAlreadyPushed(aweme.aweme_id, sec_uid, groupIds)
+                                if (!alreadyPushed) {
+                                    shouldPush = true
+                                    logger.mark(`[Douyin Push] 发现新作品待推送: ${aweme.aweme_id}`);
+                                }
+                            }
 
-                        // 判断是否需要推送
-                        if ((is_top && timeDifference < 86400000) || (timeDifference < 86400000 && !is_top)) {
-                            // 检查是否已经推送过
-                            const groupIds = targets.map(t => t.groupId).filter((id) => id !== undefined)
-                            const alreadyPushed = await this.checkIfAlreadyPushed(aweme.aweme_id, sec_uid, groupIds)
-
-                            if (!alreadyPushed) {
-                                shouldPush = true
+                            if (shouldPush) {
+                                willbepushlist[aweme.aweme_id] = {
+                                    remark: item?.remark || aweme.author?.nickname || '未知',
+                                    sec_uid,
+                                    create_time: createTime,
+                                    targets,
+                                    Detail_Data: {
+                                        ...aweme,
+                                        user_info: userinfo
+                                    },
+                                    avatar_img: 'https://p3-pc.douyinpic.com/aweme/1080x1080/' + (userData.avatar_larger?.uri || ''),
+                                    living: false
+                                }
                             }
                         }
+                    }
 
-                        if (shouldPush) {
-                            willbepushlist[aweme.aweme_id] = {
-                                remark: item?.remark || aweme.author.nickname,
+                    /** 获取缓存的直播状态 */
+                    const liveStatus = await douyinDB?.getLiveStatus(sec_uid)
+
+                    if (userData.live_status === 1) {
+                        const liveInfo = await this.amagi.douyin.fetcher.fetchLiveRoomInfo({ sec_uid: userData.sec_uid || sec_uid, typeMode: 'strict' }).catch(() => ({}))
+
+                        // 如果之前没有直播，现在开播了，需要推送
+                        if (!liveStatus?.living) {
+                            willbepushlist[`live_${sec_uid}`] = {
+                                remark: item.remark,
                                 sec_uid,
-                                create_time: aweme.create_time * 1000,
+                                create_time: Date.now(),
                                 targets,
                                 Detail_Data: {
-                                    ...aweme,
-                                    user_info: userinfo
+                                    user_info: userinfo,
+                                    room_data: userData.room_data ? JSON.parse(userData.room_data) : {},
+                                    live_data: liveInfo,
+                                    liveStatus: { liveStatus: 'open', isChanged: true, isliving: true }
                                 },
-                                avatar_img: 'https://p3-pc.douyinpic.com/aweme/1080x1080/' + userinfo.data.user.avatar_larger.uri,
-                                living: false
+                                avatar_img: 'https://p3-pc.douyinpic.com/aweme/1080x1080/' + (userData.avatar_larger?.uri || ''),
+                                living: true
                             }
                         }
+                    } else if (liveStatus?.living) {
+                        // 如果之前在直播，现在已经关播，需要更新状态
+                        await douyinDB?.updateLiveStatus(sec_uid, false)
+                        logger.info(`用户 ${item.remark || sec_uid} 已关播，更新直播状态`)
                     }
-                }
 
-                /** 获取缓存的直播状态 */
-                const liveStatus = await douyinDB?.getLiveStatus(sec_uid)
-
-                if (userinfo.data.user.live_status === 1) {
-                    const liveInfo = await this.amagi.getDouyinData('直播间信息数据', { sec_uid: userinfo.data.user.sec_uid, typeMode: 'strict' })
-
-                    // 如果之前没有直播，现在开播了，需要推送
-                    if (!liveStatus?.living) {
-                        willbepushlist[`live_${sec_uid}`] = {
-                            remark: item.remark,
-                            sec_uid,
-                            create_time: Date.now(),
-                            targets,
-                            Detail_Data: {
-                                user_info: userinfo,
-                                room_data: JSON.parse(userinfo.data.user.room_data),
-                                live_data: liveInfo,
-                                liveStatus: {
-                                    liveStatus: 'open',
-                                    isChanged: true,
-                                    isliving: true
-                                }
-                            },
-                            avatar_img: 'https://p3-pc.douyinpic.com/aweme/1080x1080/' + userinfo.data.user.avatar_larger.uri,
-                            living: true
-                        }
-                    }
-                } else if (liveStatus?.living) {
-                    // 如果之前在直播，现在已经关播，需要更新状态
-                    await douyinDB?.updateLiveStatus(sec_uid, false)
-                    logger.info(`用户 ${item.remark || sec_uid} 已关播，更新直播状态`)
+                } catch (e) {
+                    logger.error(`[Douyin Push] 获取用户 ${item.sec_uid} 列表时崩溃:`, e);
                 }
             }
         } catch (error) {
-            logger.error('获取抖音用户主页作品列表失败:', error)
+            logger.error('获取抖音用户主页作品列表总体失败:', error)
         }
 
         return willbepushlist
@@ -481,7 +501,7 @@ export class DouYinpush extends Base {
         }
 
         // 顺序获取用户数据和检查订阅状态
-        const UserInfoData = await this.amagi.getDouyinData('用户主页数据', { sec_uid, typeMode: 'strict' })
+        const UserInfoData = await this.amagi.douyin.fetcher.fetchUserProfile({ sec_uid, typeMode: 'strict' })
         const isSubscribed = await douyinDB?.isSubscribed(sec_uid, groupId)
 
         if (!UserInfoData?.data?.user) {
@@ -584,7 +604,7 @@ export class DouYinpush extends Base {
 
         for (const subscription of subscriptions) {
             const sec_uid = subscription.sec_uid
-            const userInfo = await this.amagi.getDouyinData('用户主页数据', { sec_uid, typeMode: 'strict' })
+            const userInfo = await this.amagi.douyin.fetcher.fetchUserProfile({ sec_uid, typeMode: 'strict' })
 
             renderOpt.push({
                 avatar_img: userInfo.data.user.avatar_larger.url_list[0] || '',
@@ -665,7 +685,7 @@ export class DouYinpush extends Base {
         if (updateList.length > 0) {
             for (const i of updateList) {
                 // 从外部数据源获取用户备注信息
-                const userinfo = await this.amagi.getDouyinData('用户主页数据', { sec_uid: i.sec_uid, typeMode: 'strict' })
+                const userinfo = await this.amagi.douyin.fetcher.fetchUserProfile({ sec_uid: i.sec_uid, typeMode: 'strict' })
                 const remark = userinfo.data.user.nickname
 
                 // 在配置文件中找到对应的用户，并更新其备注信息
