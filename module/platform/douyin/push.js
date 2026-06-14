@@ -349,7 +349,7 @@ export class DouYinpush extends Base {
                 // 加一层 try-catch，防止某一个博主解析失败导致后面的全军覆没
                 try {
                     const sec_uid = item.sec_uid
-                    logger.debug(`[Douyin Push] 开始获取博主：${item.remark || '未知'} 的最新作品...`)
+                    logger.mark(`[Douyin Push] 开始获取抖音UP主：${item.remark || '未知'} 的最新作品...`)
                     
                     // 🚨 修复 1：增加 count 参数，防止抖音返回空数组
                     const videolist = await this.amagi.douyin.fetcher.fetchUserVideoList({

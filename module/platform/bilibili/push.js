@@ -1,6 +1,6 @@
 import { Base, baseHeaders, Common, Config, downloadFile, mergeFile, Render, uploadFile, Version } from '../../utils/index.js'
 import { bilibiliProcessVideos, cover, generateDecorationCard, getvideosize, replacetext } from './bilibili.js'
-import { DynamicType, getBilibiliData, MajorType } from '@ikenxuan/amagi'
+import { DynamicType, MajorType } from '@ikenxuan/amagi'
 import { bilibiliDB, cleanOldDynamicCache } from '../../db/index.js'
 import common from '../../../../../lib/common/common.js'
 import fs from 'node:fs'
@@ -127,12 +127,10 @@ export class Bilibilipush extends Base {
                     let send_video = true
                     /** @type {import ('@kaguyajs/trss-yunzai-types').icqq.segment[]} */
                     let img = []
-                    const dynamicCARDINFO = await this.amagi?.getBilibiliData('动态卡片数据', { dynamic_id: dynamicId, typeMode: 'strict' })
-                    const dycrad = dynamicCARDINFO?.data.data.card && dynamicCARDINFO.data.data.card.card && JSON.parse(dynamicCARDINFO.data.data.card.card)
 
                     if (!skip) {
-                        const userINFO = await this.amagi?.getBilibiliData('用户主页数据', { host_mid: dynamicItem.host_mid, typeMode: 'strict' })
-                        let emojiResponse = await this.amagi?.getBilibiliData('Emoji数据')
+                        const userINFO = await this.amagi.bilibili.fetcher.fetchUserCard({ host_mid: String(dynamicItem.host_mid), typeMode: 'strict' }).catch(() => null)
+                        let emojiResponse = await this.amagi.bilibili.fetcher.fetchEmojiList({ typeMode: 'strict' }).catch(() => null)
                         const emojiDATA = extractEmojisData(emojiResponse?.data?.data?.packages || [])
 
                         switch (dynamicItem.dynamic_type) {
@@ -152,7 +150,7 @@ export class Bilibilipush extends Base {
                                 }
                                 img = await Render('bilibili/dynamic/DYNAMIC_TYPE_DRAW',
                                     {
-                                        image_url: dycrad?.item?.pictures && cover(dycrad.item.pictures),
+                                        image_url: dynamicItem.Dynamic_Data.modules.module_dynamic.major?.opus?.pics?.filter(item => item?.url).map(item => ({ image_src: item.url })) || [],
                                         text: replacetext(
                                             br(
                                                 dynamicItem.Dynamic_Data.modules.module_dynamic.major?.opus?.summary?.text || ''),
@@ -212,8 +210,9 @@ export class Bilibilipush extends Base {
                             case DynamicType.AV: {
                                 if (dynamicItem.Dynamic_Data.modules.module_dynamic.major?.type === 'MAJOR_TYPE_ARCHIVE') {
                                     const bvid = dynamicItem.Dynamic_Data?.modules.module_dynamic.major?.archive?.bvid || ''
-                                    const INFODATA = await getBilibiliData('单个视频作品数据', '', { bvid, typeMode: 'strict' })
+                                    const INFODATA = await this.amagi.bilibili.fetcher.fetchVideoInfo({ bvid: String(bvid), typeMode: 'strict' }).catch(() => null)
 
+                                    if (!INFODATA?.data?.data) { skip = true; break; }
                                     if (INFODATA.data.data.redirect_url) {
                                         send_video = false
                                         logger.debug(`UP主：${INFODATA.data.data.owner.name} 的该动态类型为${logger.yellow('番剧或影视')}，默认跳过不下载，直达：${logger.green(INFODATA.data.data.redirect_url)}`)
@@ -224,12 +223,12 @@ export class Bilibilipush extends Base {
                                         {
                                             image_url: [{ image_src: INFODATA.data.data.pic }],
                                             text: br(INFODATA.data.data.title),
-                                            desc: br(dycrad.desc),
+                                            desc: br(dynamicItem.Dynamic_Data.modules.module_dynamic?.desc?.text || ""),
                                             dianzan: Common.count(INFODATA.data.data.stat.like),
                                             pinglun: Common.count(INFODATA.data.data.stat.reply),
                                             share: Common.count(INFODATA.data.data.stat.share),
-                                            view: Common.count(dycrad.stat.view),
-                                            coin: Common.count(dycrad.stat.coin),
+                                            view: Common.count(dynamicItem.Dynamic_Data.modules.module_dynamic.major?.archive?.stat?.view || 0),
+                                            coin: 0,
                                             duration_text: dynamicItem.Dynamic_Data.modules.module_dynamic.major?.archive?.duration_text || '0:00',
                                             create_time: Common.convertTimestampToDateTime(INFODATA.data.data.ctime),
                                             avatar_url: INFODATA.data.data.owner.face,
@@ -248,18 +247,19 @@ export class Bilibilipush extends Base {
                             }
                             /** 处理直播动态 */
                             case DynamicType.LIVE_RCMD: {
+                                const liveData = dynamicItem.Dynamic_Data.modules.module_dynamic.major?.live_rcmd?.content ? JSON.parse(dynamicItem.Dynamic_Data.modules.module_dynamic.major.live_rcmd.content) : { live_play_info: {} };
                                 img = await Render('bilibili/dynamic/DYNAMIC_TYPE_LIVE_RCMD',
                                     {
-                                        image_url: [{ image_src: dycrad.live_play_info.cover }],
-                                        text: br(dycrad.live_play_info.title),
-                                        liveinf: br(`${dycrad.live_play_info.area_name} | 房间号: ${dycrad.live_play_info.room_id}`),
-                                        username: checkvip(userINFO.data.data.card),
-                                        avatar_url: userINFO.data.data.card.face,
-                                        frame: dynamicItem.Dynamic_Data.modules.module_author.pendant.image,
-                                        fans: Common.count(userINFO.data.data.follower),
+                                        image_url: [{ image_src: liveData.live_play_info?.cover || '' }],
+                                        text: br(liveData.live_play_info?.title || ''),
+                                        liveinf: br(`${liveData.live_play_info?.area_name || ''} | 房间号: ${liveData.live_play_info?.room_id || ''}`),
+                                        username: checkvip(userINFO?.data?.data?.card || { name: '获取失败', vip: {} }),
+                                        avatar_url: userINFO?.data?.data?.card?.face || '',
+                                        frame: dynamicItem.Dynamic_Data.modules.module_author.pendant?.image || '',
+                                        fans: Common.count(userINFO?.data?.data?.follower || 0),
                                         create_time: Common.convertTimestampToDateTime(dynamicItem.Dynamic_Data.modules.module_author.pub_ts),
                                         now_time: Common.getCurrentTime(),
-                                        share_url: 'https://live.bilibili.com/' + dycrad.live_play_info.room_id,
+                                        share_url: 'https://live.bilibili.com/' + (liveData.live_play_info?.room_id || ''),
                                         dynamicTYPE: '直播动态推送'
                                     }
                                 )
@@ -287,17 +287,16 @@ export class Bilibilipush extends Base {
                                         break
                                     }
                                     case DynamicType.DRAW: {
-                                        const dynamicCARD = await getBilibiliData('动态卡片数据', Config.cookies.bilibili || '', { dynamic_id: dynamicItem.Dynamic_Data.orig.id_str, typeMode: 'strict' })
-                                        const cardData = JSON.parse(dynamicCARD.data.data.card.card)
-                                        const summary = dynamicItem.Dynamic_Data.orig.modules.module_dynamic.major.opus.summary
+                                        const origPics = dynamicItem.Dynamic_Data.orig.modules.module_dynamic.major?.opus?.pics || [];
+                                        const summary = dynamicItem.Dynamic_Data.orig.modules.module_dynamic.major?.opus?.summary;
                                         param = {
                                             username: checkvip(dynamicItem.Dynamic_Data.orig.modules.module_author),
                                             create_time: Common.convertTimestampToDateTime(dynamicItem.Dynamic_Data.orig.modules.module_author.pub_ts),
                                             avatar_url: dynamicItem.Dynamic_Data.orig.modules.module_author.face,
                                             text: replacetext(br(summary?.text || ''), summary?.rich_text_nodes || []),
-                                            image_url: cardData.item.pictures ? cover(cardData.item.pictures) : [],
+                                            image_url: origPics.filter(item => item?.url).map(item => ({ image_src: item.url })),
                                             decoration_card: generateDecorationCard(dynamicItem.Dynamic_Data.orig.modules.module_author.decoration_card),
-                                            frame: dynamicItem.Dynamic_Data.orig.modules.module_author.pendant.image
+                                            frame: dynamicItem.Dynamic_Data.orig.modules.module_author.pendant?.image || ""
                                         }
                                         break
                                     }
@@ -392,7 +391,7 @@ export class Bilibilipush extends Base {
                                         } catch (error) {
                                             logger.error(error)
                                         }
-                                    } else if (!iddata.is_mp4 && iddata.type === 'one_work') { 
+                                    } else if (!iddata.is_mp4 && iddata.type === 'one_work') {
                                         // ... 解析图集代码 ...
                                         Bot?.[botId]?.pickGroup(groupId) && forwardMsg
                                             ? await Bot[botId].pickGroup(groupId).sendMsg(forwardMsg)
@@ -456,7 +455,10 @@ export class Bilibilipush extends Base {
             /** 过滤掉不启用的订阅项 */
             const filteredUserList = userList.filter(item => item.switch !== false)
             for (const item of filteredUserList) {
-                const dynamic_list = await this.amagi.getBilibiliData('用户主页动态列表数据', { host_mid: item.host_mid, typeMode: 'strict' })
+                const dynamic_list = await this.amagi.bilibili.fetcher.fetchUserDynamicList({ host_mid: String(item.host_mid), typeMode: 'strict' }).catch(e => {
+                    logger.error(`[Bilibili Push] 获取UP主 ${item.host_mid} 动态失败:`, e)
+                    return null;
+                })
                 if (!dynamic_list?.data?.data?.items) continue
                 if (dynamic_list.data.data.items.length > 0) {
                     // 遍历接口返回的视频列表
@@ -664,8 +666,9 @@ export class Bilibilipush extends Base {
         if (abclist.length > 0) {
             for (const i of abclist) {
                 // 从外部数据源获取用户备注信息
-                const resp = await this.amagi.getBilibiliData('用户主页数据', { host_mid: i.host_mid, typeMode: 'strict' })
-                const remark = resp.data.data.card.name
+                const resp = await this.amagi.bilibili.fetcher.fetchUserCard({ host_mid: String(i.host_mid), typeMode: 'strict' }).catch(() => null)
+                const remark = resp?.data?.data?.card?.name
+                if (!remark) continue;
                 // 在配置文件中找到对应的用户，并更新其备注信息
                 const matchingItemIndex = config.bilibili?.findIndex(item => item.host_mid === i.host_mid) || 0
                 if (matchingItemIndex !== -1 && config.bilibili && config.bilibili[matchingItemIndex]) {
@@ -737,7 +740,9 @@ export class Bilibilipush extends Base {
         // 获取所有订阅UP主的信息
         for (const subscription of subscriptions) {
             const host_mid = subscription.host_mid
-            const userInfo = await this.amagi.getBilibiliData('用户主页数据', { host_mid, typeMode: 'strict' })
+            const userInfo = await this.amagi.bilibili.fetcher.fetchUserCard({ host_mid: String(host_mid), typeMode: 'strict' }).catch(() => null)
+
+            if (!userInfo?.data?.data?.card) continue;
 
             renderOpt.push({
                 avatar_img: userInfo.data.data.card.face,

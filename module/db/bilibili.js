@@ -478,6 +478,22 @@ export class BilibiliDBBase {
       const remark = item.remark ?? ''
       // 创建或更新B站用户记录
       await this.getOrCreateBilibiliUser(host_mid, remark)
+      // ===== 核心修复 1：将 YAML 里的过滤词和标签完美同步到 SQLite 数据库 =====
+      if (item.filterMode) {
+        await this.updateFilterMode(host_mid, item.filterMode)
+      }
+      if (item.Keywords && Array.isArray(item.Keywords)) {
+        const dbWords = await this.getFilterWords(host_mid)
+        // 删除YAML中已去除的词，添加YAML中新增的词
+        for (const word of dbWords) { if (!item.Keywords.includes(word)) await this.removeFilterWord(host_mid, word) }
+        for (const word of item.Keywords) { if (!dbWords.includes(word)) await this.addFilterWord(host_mid, word) }
+      }
+      if (item.Tags && Array.isArray(item.Tags)) {
+        const dbTags = await this.getFilterTags(host_mid)
+        for (const tag of dbTags) { if (!item.Tags.includes(tag)) await this.removeFilterTag(host_mid, tag) }
+        for (const tag of item.Tags) { if (!dbTags.includes(tag)) await this.addFilterTag(host_mid, tag) }
+      }
+      // =========================================================================
       // 处理该UP主的所有群组订阅
       for (const groupWithBot of item.group_id) {
         const [groupId, botId] = groupWithBot.split(':')
@@ -728,21 +744,36 @@ export class BilibiliDBBase {
       }
     }
     // 若为转发动态，再检查子动态
+    // ===== 核心修复 2：全覆盖提取子动态的任何文本（防抽奖漏网） =====
     if (dynamicData.type === DynamicType.FORWARD && 'orig' in dynamicData) {
-      if (dynamicData.orig.type === DynamicType.AV) {
-        text += dynamicData.orig.modules.module_dynamic.major.archive.title + ''
-      } else {
-        logger.debug(`提取子动态文本和tag：https://t.bilibili.com/${dynamicData.id_str}`)
-        try {
-          text += dynamicData.orig.modules.module_dynamic.major.opus.summary.text + ' '
-          for (const node of dynamicData.orig.modules.module_dynamic.major.opus.summary.rich_text_nodes) {
-            tags.push(node.orig_text)
+      logger.debug(`提取子动态文本和tag：https://t.bilibili.com/${dynamicData.id_str}`)
+      try {
+        const origDynamic = dynamicData.orig.modules?.module_dynamic;
+        if (origDynamic) {
+          // 1. 提取原动态的纯文本描述
+          if (origDynamic.desc?.text) text += ' ' + origDynamic.desc.text;
+          // 2. 提取原动态的视频标题
+          if (origDynamic.major?.archive?.title) text += ' ' + origDynamic.major.archive.title;
+          // 3. 提取原动态的图文(opus)内容
+          if (origDynamic.major?.opus?.summary?.text) text += ' ' + origDynamic.major.opus.summary.text;
+          // 4. 提取原动态的直播标题
+          if (origDynamic.major?.live_rcmd?.content) {
+             const liveContent = JSON.parse(origDynamic.major.live_rcmd.content);
+             if (liveContent?.live_play_info?.title) text += ' ' + liveContent.live_play_info.title;
           }
-        } catch (error) {
-          logger.error(`提取子动态文本和tag失败：${error}`)
+          // 5. 提取原动态的标签 (兼容不同位置的 rich_text_nodes)
+          const rich_nodes = origDynamic.desc?.rich_text_nodes || origDynamic.major?.opus?.summary?.rich_text_nodes || [];
+          for (const node of rich_nodes) {
+             if (node.type !== 'RICH_TEXT_NODE_TYPE_TEXT' && node.orig_text) {
+                 tags.push(node.orig_text);
+             }
+          }
         }
+      } catch (error) {
+        logger.error(`提取子动态文本和tag失败：${error}`)
       }
     }
+    // ==========================================================
     return { text: text.trim(), tags }
   }
 
