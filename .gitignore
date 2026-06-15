@@ -13,3 +13,4 @@ amagi/node_modules/*
 .vscode/
 test/
 .eslintrc
+.eslintcache

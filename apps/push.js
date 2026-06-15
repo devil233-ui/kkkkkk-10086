@@ -1,5 +1,4 @@
 import { Bilibilipush } from '../module/platform/bilibili/index.js'
-import { getBilibiliData, getDouyinData } from '@ikenxuan/amagi'
 import { DouYinpush } from '../module/platform/douyin/index.js'
 import { Config } from '../module/utils/index.js'
 
@@ -78,10 +77,27 @@ export class kkkPush extends plugin {
    * @returns {Promise<boolean>}
    */
   async setdyPush(e) {
-    // 如果是私聊消息，直接返回true
     if (e.isPrivate) return true
-    const data = await getDouyinData('搜索数据', Config.cookies.douyin, { query: e.msg.replace(/^#设置抖音推送/, ''), typeMode: 'strict' })
-    await new DouYinpush(e).setting(data.data)
+    
+    // 实例化一个带 Cookie 和环境上下文的推送对象
+    const dy = new DouYinpush(e)
+    
+    // 使用带 Cookie 的内置 amagi 实例去请求，防风控拦截
+    const data = await dy.amagi.douyin.fetcher.searchContent({ 
+      query: e.msg.replace(/^#设置抖音推送/, ''), 
+      type: "user", 
+      typeMode: 'strict' 
+    }).catch(err => {
+      logger.error('获取抖音用户数据失败:', err)
+      return null
+    })
+
+    if (!data || !data.data) {
+      await e.reply('获取抖音用户数据失败，请检查 Cookie 配置或稍后再试', { reply: true })
+      return true
+    }
+
+    await dy.setting(data.data)
     return true
   }
 
@@ -91,20 +107,31 @@ export class kkkPush extends plugin {
    * @returns {Promise<boolean>}
    */
   async setbiliPush(e) {
-    // 如果是私信消息，直接返回true
     if (e.isPrivate) return true
-    // 检查是否配置了B站Cookie，如果没有则提示用户配置
     if (!Config.cookies.bilibili) {
       await e.reply('\n请先配置B站Cookie', { at: true })
       return true
     }
-    // 使用正则表达式匹配消息格式，提取UID
-    const match = /^#设置[bB]站推送(?:UID:)?(\d+)$/.exec(e.msg)
+    
+    const match = /^#设置[bB]站推送(?:[Uu][Ii][Dd]:)?(\d+)$/.exec(e.msg)
     if (match && match[1]) {
-      // 获取B站用户主页数据
-      const data = await getBilibiliData('用户主页数据', Config.cookies.bilibili, { host_mid: Number(match[1]), typeMode: 'strict' })
-      // 创建Bilibilipush实例并调用setting方法进行设置
-      await new Bilibilipush(e).setting(data.data)
+      // 实例化带 B站 Cookie 的推送对象
+      const bili = new Bilibilipush(e)
+      
+      const data = await bili.amagi.bilibili.fetcher.fetchUserCard({ 
+        host_mid: String(match[1]), 
+        typeMode: 'strict' 
+      }).catch(err => {
+        logger.error('获取B站用户数据失败:', err)
+        return null
+      })
+
+      if (!data || !data.data) {
+        await e.reply('获取B站用户数据失败，请检查 UID 或 Cookie 配置', { reply: true })
+        return true
+      }
+
+      await bili.setting(data.data)
     }
     return true
   }

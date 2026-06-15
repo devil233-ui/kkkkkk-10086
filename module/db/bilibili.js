@@ -129,6 +129,8 @@ export class BilibiliDBBase {
     for (const query of queries) {
       await this.runQuery(query)
     }
+    // 兼容老数据库，自动静默追加 parsedynamic 字段
+    try { await this.runQuery('ALTER TABLE BilibiliUsers ADD COLUMN parsedynamic TEXT DEFAULT NULL') } catch (e) { }
   }
 
   /**
@@ -478,7 +480,9 @@ export class BilibiliDBBase {
       const remark = item.remark ?? ''
       // 创建或更新B站用户记录
       await this.getOrCreateBilibiliUser(host_mid, remark)
-      // ===== 核心修复 1：将 YAML 里的过滤词和标签完美同步到 SQLite 数据库 =====
+      if (item.parsedynamic) {
+        await this.updateParseDynamic(host_mid, JSON.stringify(item.parsedynamic))
+      }
       if (item.filterMode) {
         await this.updateFilterMode(host_mid, item.filterMode)
       }
@@ -546,6 +550,18 @@ export class BilibiliDBBase {
         logger.mark(`已删除UP主 ${host_mid} 的记录及相关过滤设置（不再被任何群组订阅）`)
       }
     }
+  }
+  /**
+   * 更新用户的推送解析独立配置
+   */
+  async updateParseDynamic(host_mid, parsedynamic) {
+    const user = await this.getOrCreateBilibiliUser(host_mid)
+    const now = (/* @__PURE__ */ new Date()).toISOString()
+    await this.runQuery(
+      'UPDATE BilibiliUsers SET parsedynamic = ?, updatedAt = ? WHERE host_mid = ?',
+      [parsedynamic, now, host_mid]
+    )
+    return { ...user, parsedynamic, updatedAt: now }
   }
 
   /**
@@ -758,15 +774,15 @@ export class BilibiliDBBase {
           if (origDynamic.major?.opus?.summary?.text) text += ' ' + origDynamic.major.opus.summary.text;
           // 4. 提取原动态的直播标题
           if (origDynamic.major?.live_rcmd?.content) {
-             const liveContent = JSON.parse(origDynamic.major.live_rcmd.content);
-             if (liveContent?.live_play_info?.title) text += ' ' + liveContent.live_play_info.title;
+            const liveContent = JSON.parse(origDynamic.major.live_rcmd.content);
+            if (liveContent?.live_play_info?.title) text += ' ' + liveContent.live_play_info.title;
           }
           // 5. 提取原动态的标签 (兼容不同位置的 rich_text_nodes)
           const rich_nodes = origDynamic.desc?.rich_text_nodes || origDynamic.major?.opus?.summary?.rich_text_nodes || [];
           for (const node of rich_nodes) {
-             if (node.type !== 'RICH_TEXT_NODE_TYPE_TEXT' && node.orig_text) {
-                 tags.push(node.orig_text);
-             }
+            if (node.type !== 'RICH_TEXT_NODE_TYPE_TEXT' && node.orig_text) {
+              tags.push(node.orig_text);
+            }
           }
         }
       } catch (error) {

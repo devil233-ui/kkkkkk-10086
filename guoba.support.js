@@ -431,7 +431,7 @@ export function supportGuoba() {
         },
         {
           component: 'Divider',
-          label: '哔哩哔哩视频解析配置',
+          label: 'B站解析配置',
           componentProps: {
             orientation: 'left',
             plain: true
@@ -481,7 +481,7 @@ export function supportGuoba() {
         },
         {
           field: 'bilibili.videopriority',
-          label: '优先保内容',
+          label: 'B站优先保内容',
           bottomHelpMessage: '解析视频是否优先保内容，true为优先保证上传将使用最低分辨率，false则使用自定义画质偏好',
           component: 'Switch',
           required: false
@@ -509,7 +509,7 @@ export function supportGuoba() {
         },
         {
           field: 'bilibili.maxAutoVideoSize',
-          label: '自动画质最大视频大小',
+          label: 'B站自动画质最大视频大小',
           helpMessage: '必填项',
           bottomHelpMessage: '请在此输入数字',
           component: 'InputNumber',
@@ -523,7 +523,7 @@ export function supportGuoba() {
         },
         {
           field: 'bilibili.bilibilinumcomments',
-          label: '评论解析数量',
+          label: 'B站评论解析数量',
           helpMessage: '必填项',
           bottomHelpMessage: '请在此输入数字',
           component: 'InputNumber',
@@ -537,14 +537,14 @@ export function supportGuoba() {
         },
         {
           field: 'bilibili.realCommentCount',
-          label: '显示真实评论数量',
+          label: 'B站显示真实评论数量',
           bottomHelpMessage: '评论图是否显示真实评论数量，关闭则显示解析到的评论数量',
           component: 'Switch',
           required: false
         },
         {
           component: 'Divider',
-          label: '哔哩哔哩视频推送配置',
+          label: 'B站推送配置',
           componentProps: {
             orientation: 'left',
             plain: true
@@ -552,14 +552,14 @@ export function supportGuoba() {
         },
         {
           field: 'bilibili.push.switch',
-          label: '哔哩哔哩推送',
+          label: 'B站推送指令开关',
           bottomHelpMessage: '开启后需使用[#设置B站推送+用户UID]',
           component: 'Switch',
           required: false
         },
         {
           field: 'pushlist.bilibili',
-          label: '推送列表',
+          label: 'B站推送列表',
           bottomHelpMessage: '用于推送B站UP新作品功能，配置后即可推送',
           component: 'GSubForm',
           componentProps: {
@@ -596,6 +596,20 @@ export function supportGuoba() {
                 label: '备注',
                 bottomHelpMessage: '可不填，推送过程中会自动获取并写入',
                 component: 'Input',
+                required: false
+              },
+              {
+                field: 'parsedynamic',
+                label: '推送解析UP独立配置',
+                bottomHelpMessage: '优先于全局设置。支持多选「视频」或「图文」，留空则自动继承全局解析选项',
+                component: 'Select',
+                componentProps: {
+                  mode: 'multiple',
+                  options: [
+                    { label: '视频', value: '视频' },
+                    { label: '图文', value: '图文' }
+                  ]
+                },
                 required: false
               },
               {
@@ -639,7 +653,7 @@ export function supportGuoba() {
         },
         {
           field: 'bilibili.push.cron',
-          label: 'Cron表达式',
+          label: 'B站推送Cron表达式',
           helpMessage: '修改后重启生效',
           bottomHelpMessage: '定时任务推送时间，如果想改成5分钟一次用后面的表达式 */5 * * * *',
           component: 'EasyCron',
@@ -650,7 +664,7 @@ export function supportGuoba() {
         },
         {
           field: 'bilibili.push.permission',
-          label: '设置推送权限',
+          label: 'B站设置推送权限',
           component: 'RadioGroup',
           bottomHelpMessage: 'B站推送添加权限',
           componentProps: {
@@ -663,7 +677,7 @@ export function supportGuoba() {
         },
         {
           field: 'bilibili.push.log',
-          label: '定时任务日志',
+          label: 'B站推送定时任务日志',
           helpMessage: 'B站推送日志，修改后重启生效',
           bottomHelpMessage: '打开或关闭定时任务日志',
           component: 'Switch',
@@ -671,14 +685,22 @@ export function supportGuoba() {
         },
         {
           field: 'bilibili.push.parsedynamic',
-          label: '是否解析动态',
-          helpMessage: '该UP的最新动态可能是视频，可选是否与推送图片一同发送',
-          component: 'Switch',
-          required: false
+          label: 'B站推送解析总配置',
+          helpMessage: '推送时向下解析的动态内容',
+          bottomHelpMessage: '支持多选，精细化控制发送「视频」或「图文」。留空则全不解析',
+          component: 'Select',
+          required: false,
+          componentProps: {
+            mode: 'multiple',
+            options: [
+              { label: '视频', value: '视频' },
+              { label: '图文', value: '图文' }
+            ]
+          }
         },
         {
           field: 'bilibili.push.pushVideoQuality',
-          label: '推送视频画质偏好设置',
+          label: 'B站推送视频画质偏好设置',
           bottomHelpMessage: '推送视频画质偏好设置',
           component: 'RadioGroup',
           componentProps: {
@@ -699,7 +721,7 @@ export function supportGuoba() {
         },
         {
           field: 'bilibili.push.pushMaxAutoVideoSize',
-          label: '推送视频自动最大画质',
+          label: 'B站推送视频自动最大画质',
           helpMessage: '必填项',
           bottomHelpMessage: '请在此输入数字',
           component: 'InputNumber',

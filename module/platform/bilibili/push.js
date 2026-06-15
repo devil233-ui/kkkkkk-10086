@@ -370,9 +370,32 @@ export class Bilibilipush extends Base {
                         continue; // 直接跳出当前动态的处理，不进入下面的 targets 循环，也不触发 finally 记录 DB
                     }
 
+                    // 🚨 新增：精准识别当前动态或被转发动态的媒体类型
+                    let isVideo = false;
+                    let isDraw = false;
+                    let bvidToParse = '';
+                    let picsToParse = [];
+
+                    if (dynamicItem.dynamic_type === DynamicType.AV) {
+                        isVideo = true;
+                        bvidToParse = dynamicItem.Dynamic_Data?.modules?.module_dynamic?.major?.archive?.bvid || '';
+                    } else if (dynamicItem.dynamic_type === DynamicType.DRAW) {
+                        isDraw = true;
+                        picsToParse = dynamicItem.Dynamic_Data?.modules?.module_dynamic?.major?.opus?.pics || [];
+                    } else if (dynamicItem.dynamic_type === DynamicType.FORWARD) {
+                        const origType = dynamicItem.Dynamic_Data?.orig?.type;
+                        if (origType === DynamicType.AV) {
+                            isVideo = true;
+                            bvidToParse = dynamicItem.Dynamic_Data?.orig?.modules?.module_dynamic?.major?.archive?.bvid || '';
+                        } else if (origType === DynamicType.DRAW) {
+                            isDraw = true;
+                            picsToParse = dynamicItem.Dynamic_Data?.orig?.modules?.module_dynamic?.major?.opus?.pics || [];
+                        }
+                    }
+
                     // 遍历目标数组，并发送消息
                     for (const target of dynamicItem.targets) {
-                        let sendSuccess = false // 【1. 新增】成功状态标志
+                        let sendSuccess = false // 成功状态标志
                         try {
                             let status = { message_id: '' }
                             if (!skip) {
@@ -383,25 +406,78 @@ export class Bilibilipush extends Base {
                                     : (logger.warn(`bot${botId}不存在或群${groupId}不存在`), { message_id: '1' })
 
                                 // ========================================================
-                                // 是否一同解析该新作品？(中间这大段保持你的原样，千万别删括号，也别乱加 break)
-                                if (Config.bilibili?.push?.parsedynamic && status.message_id) {
-                                    if (iddata.is_mp4) {
+                                // 🚨 核心修复：B站动态精细化向下解析（支持 UP 主专属配置覆盖全局配置）
+                                let parseConfig = dynamicItem.parsedynamic !== undefined ? dynamicItem.parsedynamic : Config.bilibili?.push?.parsedynamic;
+                                let parseVideo = Array.isArray(parseConfig) ? parseConfig.includes('视频') : (parseConfig === true);
+                                let parseDraw = Array.isArray(parseConfig) ? parseConfig.includes('图文') : (parseConfig === true);
+
+                                if ((parseVideo || parseDraw) && status.message_id && status.message_id !== '1') {
+                                    
+                                    // 1. 处理视频解析
+                                    if (isVideo && parseVideo && bvidToParse) {
                                         try {
-                                            // ... 解析视频代码 ...
+                                            logger.mark(`[Bilibili Push] 准备解析并推送视频: ${bvidToParse}`);
+                                            const infoData = await this.amagi.bilibili.fetcher.fetchVideoInfo({ bvid: String(bvidToParse), typeMode: 'strict' }).catch(() => null);
+                                            
+                                            if (infoData?.data?.data) {
+                                                const cid = infoData.data.data.cid;
+                                                const aid = infoData.data.data.aid;
+                                                const title = infoData.data.data.title.substring(0, 50).replace(/[\\/:*?"<>|\r\n\s]/g, ' ');
+                                                
+                                                // 获取极其轻量的 HTML5 DURL 直链，绕过 DASH 合成，专为 Push 打造的高速通道
+                                                const { bilibiliApiUrls } = await import("@ikenxuan/amagi");
+                                                const { Networks, downloadVideo } = await import('../../utils/index.js');
+                                                
+                                                const nockData = await new Networks({
+                                                    url: bilibiliApiUrls.getVideoStream({ avid: aid, cid: cid }) + "&platform=html5",
+                                                    headers: bilibiliBaseHeaders
+                                                }).getData();
+
+                                                let durlUrl = nockData?.data?.durl?.[0]?.url;
+                                                if (durlUrl) {
+                                                    // 无脑套上顶级 CDN 防火墙，防超时防拦截
+                                                    durlUrl = durlUrl.replace(/^https?:\/\/[^\/]+/, 'https://upos-sz-mirrorhw.bilivideo.com');
+                                                    logger.mark(`[Bilibili Push] 正在后台下载并发送 B站视频: ${title}.mp4 ...`);
+                                                    
+                                                    await downloadVideo(this.e, {
+                                                        video_url: durlUrl,
+                                                        title: { timestampTitle: `tmp_${Date.now()}.mp4`, originTitle: `${title}.mp4` },
+                                                        headers: { ...bilibiliBaseHeaders, Referer: "https://www.bilibili.com" }
+                                                    }, { active: true, activeOption: { uin: botId, group_id: groupId } });
+                                                    logger.mark(`[Bilibili Push] 视频 ${title}.mp4 下载并发送完毕！`);
+                                                } else {
+                                                    logger.warn(`[Bilibili Push] 获取视频流失败，可能为大会员限制`);
+                                                }
+                                            }
                                         } catch (error) {
-                                            logger.error(error)
+                                            logger.error('[Bilibili Push] 视频流提取或发送失败:', error);
                                         }
-                                    } else if (!iddata.is_mp4 && iddata.type === 'one_work') {
-                                        // ... 解析图集代码 ...
-                                        Bot?.[botId]?.pickGroup(groupId) && forwardMsg
-                                            ? await Bot[botId].pickGroup(groupId).sendMsg(forwardMsg)
-                                            : (logger.warn(`bot${botId}不存在或群${groupId}不存在`), { message_id: '1' })
+                                    } 
+                                    
+                                    // 2. 处理图集/图文解析
+                                    else if (isDraw && parseDraw && picsToParse && picsToParse.length > 0) {
+                                        try {
+                                            logger.mark(`[Bilibili Push] 准备提取并推送无损图集...`);
+                                            const imageres = [];
+                                            for (const pic of picsToParse) {
+                                                if (pic.url) imageres.push(segment.image(pic.url));
+                                            }
+                                            if (imageres.length > 0) {
+                                                const forwardMsg = Version.BotName === 'Miao-Yunzai' ?
+                                                    Bot?.makeForwardMsg(imageres.map(img => ({ user_id: 2854196310, message: img }))) :
+                                                    common?.makeForwardMsg(Bot?.[botId], imageres, '作品图片');
+
+                                                Bot?.[botId]?.pickGroup(groupId) && forwardMsg
+                                                    ? await Bot[botId].pickGroup(groupId).sendMsg(forwardMsg)
+                                                    : logger.warn(`bot${botId}不存在或群${groupId}不存在`);
+                                                logger.mark(`[Bilibili Push] 提取图集已成功合并为转发消息发送！`);
+                                            }
+                                        } catch (error) {
+                                            logger.error('[Bilibili Push] 图集提取失败:', error);
+                                        }
                                     }
                                 }
                                 // ========================================================
-
-                                // 【核心修复】sendSuccess 必须放在 if (!skip) 的最末尾！
-                                // 必须且只能在 catch 之前保留两个右括号 }
                                 sendSuccess = true
                             }
                         } catch (error) {
@@ -511,7 +587,8 @@ export class Bilibilipush extends Base {
                                     targets,
                                     Dynamic_Data: dynamic, // 存储 dynamic 对象
                                     avatar_img: dynamic.modules.module_author.face,
-                                    dynamic_type: dynamic.type
+                                    dynamic_type: dynamic.type,
+                                    parsedynamic: item.parsedynamic
                                 }
                             }
                         }
@@ -800,35 +877,63 @@ const extractEmojisData = (data) => {
  * @returns {Promise<boolean>} 是否应该跳过推送
  */
 const skipDynamic = async (PushItem) => {
-    const tags = []
+  const tags = [];
+  let fullText = "";
 
-    // 提取标签
-    if (PushItem.Dynamic_Data.modules.module_dynamic?.desc?.rich_text_nodes) {
-        for (const node of PushItem.Dynamic_Data.modules.module_dynamic.desc.rich_text_nodes) {
-            if (node.type === 'topic') {
-                if (node.orig_text) {
-                    tags.push(node.orig_text)
-                }
-            }
-        }
+  const dynamic = PushItem.Dynamic_Data.modules?.module_dynamic;
+  if (!dynamic) return false;
+
+  // 1. 提取当前动态的文本和标签（兼顾视频动态的 desc 和图文动态的 major.opus.summary）
+  if (dynamic.desc) {
+    fullText += dynamic.desc.text || "";
+    if (dynamic.desc.rich_text_nodes) {
+      for (const node of dynamic.desc.rich_text_nodes) {
+        if (node.type === "topic" && node.orig_text) tags.push(node.orig_text);
+      }
     }
-
-    // 检查转发的原动态标签
-    if (PushItem.Dynamic_Data.type === DynamicType.FORWARD && 'orig' in PushItem.Dynamic_Data) {
-        if (
-            PushItem.Dynamic_Data.orig.modules.module_dynamic.major.type === MajorType.DRAW ||
-            PushItem.Dynamic_Data.orig.modules.module_dynamic.major.type === MajorType.OPUS ||
-            PushItem.Dynamic_Data.orig.modules.module_dynamic.major.type === MajorType.LIVE_RCMD
-        ) {
-            for (const node of PushItem.Dynamic_Data.orig.modules.module_dynamic.major.opus.summary.rich_text_nodes) {
-                if (node.type === 'topic') {
-                    tags.push(node.orig_text)
-                }
-            }
-        }
+  }
+  
+  if (dynamic.major?.opus?.summary) {
+    fullText += "\n" + (dynamic.major.opus.summary.text || "");
+    if (dynamic.major.opus.summary.rich_text_nodes) {
+      for (const node of dynamic.major.opus.summary.rich_text_nodes) {
+        if (node.type === "topic" && node.orig_text) tags.push(node.orig_text);
+      }
     }
+  }
 
-    logger.debug(`检查动态是否需要过滤：https://t.bilibili.com/${PushItem.Dynamic_Data.id_str}`)
-    const shouldFilter = await bilibiliDB?.shouldFilter(PushItem, tags)
-    return /** @type {boolean} */ (shouldFilter)
-}
+  // 2. 提取转发的原动态文本和标签
+  if (PushItem.Dynamic_Data.orig) {
+    const origDynamic = PushItem.Dynamic_Data.orig.modules?.module_dynamic;
+    
+    if (origDynamic?.desc) {
+      fullText += "\n" + (origDynamic.desc.text || "");
+      if (origDynamic.desc.rich_text_nodes) {
+        for (const node of origDynamic.desc.rich_text_nodes) {
+          if (node.type === "topic" && node.orig_text) tags.push(node.orig_text);
+        }
+      }
+    }
+    
+    if (origDynamic?.major?.opus?.summary) {
+      fullText += "\n" + (origDynamic.major.opus.summary.text || "");
+      if (origDynamic.major.opus.summary.rich_text_nodes) {
+        for (const node of origDynamic.major.opus.summary.rich_text_nodes) {
+          if (node.type === "topic" && node.orig_text) tags.push(node.orig_text);
+        }
+      }
+    }
+  }
+
+  // 3. 终极防漏：把收集到的所有文本强行覆盖回 desc.text
+  // 因为底层的 shouldFilter 过滤机制只读 desc.text，这样就能让它看见所有内容！
+  if (!dynamic.desc) {
+    dynamic.desc = { text: fullText, rich_text_nodes: [] };
+  } else {
+    dynamic.desc.text = fullText;
+  }
+
+  logger.debug(`检查动态是否需要过滤：https://t.bilibili.com/${PushItem.Dynamic_Data.id_str}`);
+  const shouldFilter = await bilibiliDB.shouldFilter(PushItem, tags);
+  return shouldFilter;
+};

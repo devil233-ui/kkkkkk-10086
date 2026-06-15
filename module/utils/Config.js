@@ -155,505 +155,513 @@ import _ from 'lodash'
  */
 
 class Cfg {
-  /** @type {Record<string, any>} 配置缓存对象 */
-  config = {}
+    /** @type {Record<string, any>} 配置缓存对象 */
+    config = {}
 
-  /** @type {Record<string, any>} 文件监听器对象 */
-  watcher = { config: {}, defSet: {} }
+    /** @type {Record<string, any>} 文件监听器对象 */
+    watcher = { config: {}, defSet: {} }
 
-  constructor() {
-    this.config = {}
-    this.watcher = { config: {}, defSet: {} }
-  }
-
-  /**
-   * 初始化配置系统
-   * - 创建配置目录（如果不存在）
-   * - 从默认配置目录复制配置文件
-   * - 合并用户配置和默认配置
-   * - 设置文件监听
-   * @returns {*} 当前实例
-   */
-  initCfg() {
-    // 用户配置目录路径
-    const path = `${Version.pluginPath}/config/config/`
-    // 创建配置目录（如果不存在）
-    if (!fs.existsSync(path)) fs.mkdirSync(path)
-    // 默认配置目录路径
-    const pathDef = `${Version.pluginPath}/config/default_config/`
-    // 获取所有yaml配置文件
-    const files = fs.readdirSync(pathDef).filter(file => file.endsWith('.yaml'))
-
-    // 处理每个配置文件
-    for (const file of files) {
-      // 如果用户配置不存在，复制默认配置
-      if (!fs.existsSync(`${path}${file}`)) {
-        fs.copyFileSync(`${pathDef}${file}`, `${path}${file}`)
-      } else {
-        // 解析用户配置和默认配置
-        const config = YAML.parse(fs.readFileSync(`${path}${file}`, 'utf8'))
-        const defConfig = YAML.parse(fs.readFileSync(`${pathDef}${file}`, 'utf8'))
-        // 合并配置并检查差异
-        /** @type {{differences: boolean, result: Record<string, any>}} */
-        const { differences, result } = this.mergeObjectsWithPriority(config, defConfig)
-        // 如果有差异，更新配置文件
-        if (differences) {
-          fs.copyFileSync(`${pathDef}${file}`, `${path}${file}`)
-          for (const key in result) {
-            this.modify(/** @type {keyof ConfigType} */(file.replace('.yaml', '')), key, result[key])
-          }
-        }
-      }
-      // 监听配置文件变化
-      this.watch(`${path}${file}`, file.replace('.yaml', ''), 'config')
+    constructor() {
+        this.config = {}
+        this.watcher = { config: {}, defSet: {} }
     }
-    return this
-  }
-
-  /**
-   * 获取应用相关配置
-   * @returns {AppConfig} 应用配置对象，包含应用运行相关设置
-   * 
-   * @example
-   * // 获取应用配置
-   * const appConfig = Config.app
-   * console.log(appConfig.videotool)      // 访问视频解析工具总开关
-   * console.log(appConfig.defaulttool)    // 访问默认解析开关
-   * console.log(appConfig.removeCache)    // 访问缓存删除设置
-   * console.log(appConfig.priority)       // 访问优先级设置
-   * console.log(appConfig.sendforwardmsg) // 访问合并转发消息设置
-   * console.log(appConfig.Theme)          // 访问主题设置
-   * console.log(appConfig.renderScale)    // 访问渲染精度设置
-   * console.log(appConfig.APIServer)      // 访问API服务开关
-   * console.log(appConfig.APIServerPort)  // 访问API服务端口
-   */
-  get app() {
-    return this.getDefOrConfig('app')
-  }
-
-  /**
-   * 获取Cookie相关配置
-   * @returns {CookiesConfig} Cookie配置对象，包含各平台Cookie信息
-   * 
-   * @example
-   * // 获取Cookie配置
-   * const cookieConfig = Config.cookies
-   * console.log(cookieConfig.douyin)   // 访问抖音Cookie
-   * console.log(cookieConfig.bilibili) // 访问B站Cookie
-   * console.log(cookieConfig.kuaishou) // 访问快手Cookie
-   */
-  get cookies() {
-    return this.getDefOrConfig('cookies')
-  }
-
-  /**
-   * 获取抖音相关配置
-   * @returns {DouyinConfig} 抖音配置对象，包含抖音功能相关设置
-   * 
-   * @example
-   * // 获取抖音配置
-   * const douyinConfig = Config.douyin
-   * console.log(douyinConfig.douyintool)     // 访问抖音解析开关
-   * console.log(douyinConfig.douyinTip)      // 访问抖音解析可选列表
-   * console.log(douyinConfig.numcomments)    // 访问评论数量设置
-   * console.log(douyinConfig.commentsimg)    // 访问评论图设置
-   * console.log(douyinConfig.detailMusic)    // 访问背景音乐设置
-   * console.log(douyinConfig.sendHDrecord)   // 访问高清语音设置
-   * console.log(douyinConfig.push)           // 访问推送配置
-   */
-  get douyin() {
-    return this.getDefOrConfig('douyin')
-  }
-
-  /**
-   * 获取B站相关配置
-   * @returns {BilibiliConfig} B站配置对象，包含B站功能相关设置
-   * 
-   * @example
-   * // 获取B站配置
-   * const bilibiliConfig = Config.bilibili
-   * console.log(bilibiliConfig.bilibilitool)        // 访问B站解析开关
-   * console.log(bilibiliConfig.bilibiliTip)         // 访问B站解析可选列表
-   * console.log(bilibiliConfig.bilibilinumcomments) // 访问评论数量设置
-   * console.log(bilibiliConfig.senddynamicvideo)    // 访问动态视频设置
-   * console.log(bilibiliConfig.videopriority)       // 访问视频优先级设置
-   * console.log(bilibiliConfig.videoQuality)        // 访问视频画质设置
-   * console.log(bilibiliConfig.maxAutoVideoSize)    // 访问最大视频大小设置
-   * console.log(bilibiliConfig.displayContent)      // 访问显示内容设置
-   * console.log(bilibiliConfig.push)                // 访问推送配置
-   */
-  get bilibili() {
-    return this.getDefOrConfig('bilibili')
-  }
-
-  /**
-   * 获取推送列表配置
-   * @returns {PushlistConfig} 推送列表配置对象，包含各平台推送设置
-   * 
-   * @example
-   * // 获取推送列表配置
-   * const pushConfig = Config.pushlist
-   * console.log(pushConfig.douyin) // 访问抖音推送设置
-   */
-  get pushlist() {
-    return this.getDefOrConfig('pushlist')
-  }
-
-  /**
-   * 获取快手相关配置
-   * @returns {KuaishouConfig} 快手配置对象，包含快手功能相关设置
-   * 
-   * @example
-   * // 获取快手配置
-   * const kuaishouConfig = Config.kuaishou
-   * console.log(kuaishouConfig.comments)     // 访问评论设置
-   * console.log(kuaishouConfig.videoQuality) // 访问视频清晰度设置
-   */
-  get kuaishou() {
-    return this.getDefOrConfig('kuaishou')
-  }
-
-  /**
-   * 获取请求相关配置
-   * @returns {RequestConfig} 请求配置对象，包含超时、代理等设置
-   * 
-   * @example
-   * // 获取请求配置
-   * const requestConfig = Config.request
-   * console.log(requestConfig.timeout)    // 访问超时设置
-   * console.log(requestConfig['User-Agent']) // 访问用户代理
-   * console.log(requestConfig.proxy)      // 访问代理设置
-   */
-  get request() {
-    return this.getDefOrConfig('request')
-  }
-
-  /**
-   * 获取上传相关配置
-   * @returns {UploadConfig} 上传配置对象，包含视频上传、压缩等设置
-   * 
-   * @example
-   * // 获取上传配置
-   * const uploadConfig = Config.upload
-   * console.log(uploadConfig.sendbase64)     // 访问base64发送设置
-   * console.log(uploadConfig.compress)       // 访问视频压缩设置
-   * console.log(uploadConfig.usegroupfile)   // 访问群文件上传设置
-   */
-  get upload() {
-    return this.getDefOrConfig('upload')
-  }
-
-  /**
-   * 获取完整配置（包含数据库配置）
-   * @returns {Promise<any>} 完整配置对象
-   */
-  async All() {
-    const config = /** @type {ConfigType} */({})
-    const configPath = `${Version.pluginPath}/config/default_config/`
-    const files = fs.readdirSync(configPath).filter(file => file.endsWith('.yaml'))
-
-    for (const file of files) {
-      const name = /** @type {keyof ConfigType} */(file.replace('.yaml', ''))
-      config[name] = this.getDefOrConfig(name)
-      if (config.pushlist) {
-        const { getDouyinDB, getBilibiliDB } = await import('../db/index.js')
-        const douyinDB = await getDouyinDB()
-        const bilibiliDB = await getBilibiliDB()
-        try {
-          if (config.pushlist.douyin) {
-            for (const item of config.pushlist.douyin) {
-              const filterWords = await douyinDB?.getFilterWords(item.sec_uid)
-              const filterTags = await douyinDB?.getFilterTags(item.sec_uid)
-              const userInfo = await douyinDB?.getDouyinUser(item.sec_uid)
-              if (userInfo) item.filterMode = userInfo.filterMode || 'blacklist'
-              item.Keywords = filterWords
-              item.Tags = filterTags
-            }
-          }
-          if (config.pushlist.bilibili) {
-            for (const item of config.pushlist.bilibili) {
-              const filterWords = await bilibiliDB?.getFilterWords(item.host_mid)
-              const filterTags = await bilibiliDB?.getFilterTags(item.host_mid)
-              const userInfo = await bilibiliDB?.getOrCreateBilibiliUser(item.host_mid)
-              if (userInfo) item.filterMode = userInfo.filterMode || 'blacklist'
-              item.Keywords = filterWords
-              item.Tags = filterTags
-            }
-          }
-        } catch (error) {
-          logger.error(`从数据库获取过滤配置时出错: ${error}`)
-        }
-      }
-    }
-    return config
-  }
-
-  /**
-   * 获取合并后的配置（默认配置 + 用户配置）
-   * 用户配置会覆盖默认配置中的相同项
-   * @param {keyof ConfigType} name - 配置文件名称（不包含.yaml扩展名）
-   * @returns {any} 合并后的配置对象
-   */
-  getDefOrConfig(name) {
-    // 获取默认配置
-    const def = this.getdefSet(name)
-    // 获取用户配置
-    const config = this.getConfig(name)
-    // 合并配置，用户配置优先级更高
-    return { ...def, ...config }
-  }
-
-  /**
-   * 获取默认配置
-   * @param {string} name - 配置文件名称（不包含.yaml扩展名）
-   * @returns {any} 默认配置对象
-   * 
-   * @example
-   * // 获取默认的cookies配置
-   * const defaultCookies = Config.getdefSet('cookies')
-   */
-  getdefSet(name) {
-    return this.getYaml('default_config', name)
-  }
-
-  /**
-   * 获取用户配置
-   * @param {string} name - 配置文件名称（不包含.yaml扩展名）
-   * @returns {any} 用户配置对象
-   * 
-   * @example
-   * // 获取用户配置的douyin设置
-   * const userDouyinConfig = Config.getConfig('douyin')
-   */
-  getConfig(name) {
-    return this.getYaml('config', name)
-  }
-
-  /**
-   * 获取配置yaml文件内容
-   * @param {string} type - 配置类型，'default_config'表示默认配置，'config'表示用户配置
-   * @param {string} name - 配置文件名称（不包含.yaml扩展名）
-   * @returns {any} 返回解析后的配置对象
-   * 
-   * @example
-   * // 获取默认配置
-   * const defaultConfig = Config.getYaml('default_config', 'app')
-   * 
-   * @example
-   * // 获取用户配置
-   * const userConfig = Config.getYaml('config', 'cookies')
-   */
-  getYaml(type, name) {
-    // 构建配置文件完整路径
-    const file = `${Version.pluginPath}/config/${type}/${name}.yaml`
-    // 构建缓存键名
-    const key = `${type}.${name}`
-
-    // 如果配置已缓存，直接返回
-    if (this.config[key]) return this.config[key]
-
-    try {
-      // 检查文件是否存在
-      if (!fs.existsSync(file)) {
-        // 文件不存在时返回空对象
-        this.config[key] = {}
-      } else {
-        // 读取并解析YAML文件
-        this.config[key] = YAML.parse(fs.readFileSync(file, 'utf8'))
-      }
-    } catch (error) {
-      // 解析失败时返回空对象
-      logger.warn(`[Config] 解析配置文件失败: ${file}`)
-      this.config[key] = {}
-    }
-
-    // 监听配置文件变化
-    this.watch(file, name, type)
-
-    // 返回配置对象
-    return this.config[key]
-  }
-
-  /**
-   * 监听配置文件变化
-   * @param {string} file - 要监听的文件完整路径
-   * @param {string} name - 配置文件名称（不带扩展名）
-   * @param {string} [type='default_config'] - 配置类型，默认为默认配置
-   * @returns {void}
-   */
-  watch(file, name, type = 'default_config') {
-    const key = `${type}.${name}`
-    // 如果已经在监听，则直接返回
-    if (this.watcher[key]) return
-
-    // 创建文件监听器
-    const watcher = chokidar.watch(file)
-    // 文件变化时的处理
-    watcher.on('change', async () => {
-      // 删除缓存的配置
-      delete this.config[key]
-      // 记录日志
-      logger.mark(`[${Version.pluginName}][修改配置文件][${type}][${name}]`)
-      // 如果是pushlist配置文件变化，同步数据库配置
-      if (name === 'pushlist' && type === 'config') {
-        try {
-          await this.syncPushlistToDatabase()
-        } catch (error) {
-          logger.error('[Config] 文件监听同步数据库失败:', error)
-        } finally {
-          await this.syncConfigToDatabase() // 同步配置到数据库
-        }
-      }
-    })
-
-    // 保存监听器实例
-    this.watcher[key] = watcher
-  }
-
-  /**
-   * 修改配置文件中的指定项
-   * @param {keyof ConfigType} name - 配置文件名
-   * @param {string} key - 要修改的配置项键名
-   * @param {*} value - 要设置的新值
-   * @param {'config' | 'default_config'} [type='config'] - 配置类型，默认为用户配置
-   * @returns {void}
-   * 
-   * @example
-   * // 修改应用配置中的优先级
-   * Config.modify('app', 'priority', 1)
-   * 
-   * @example
-   * // 修改抖音配置中的评论设置
-   * Config.modify('douyin', 'comments', true)
-   * 
-   * @example
-   * // 修改默认配置中的Cookie
-   * Config.modify('cookies', 'douyin', 'your-cookie', 'default_config')
-   * 
-   */
-  modify(name, key, value, type = 'config') {
-    // 构建配置文件完整路径
-    const path = `${Version.pluginPath}/config/${type}/${name}.yaml`
-    // 使用YamlReader修改配置
-    new YamlReader(path).set(key, value)
-    // 清除对应的配置缓存
-    delete this.config[`${type}.${name}`]
-  }
-
-  /**
-   * 同步pushlist配置到数据库
-   * @returns {Promise<void>}
-   */
-  async syncPushlistToDatabase() {
-    const { getDouyinDB, getBilibiliDB } = await import('../db/index.js')
-    try {
-      /** @type {PushlistConfig} */
-      const pushlistConfig = this.getDefOrConfig('pushlist')
-      if (pushlistConfig.douyin) await this.syncFilterConfigToDb(pushlistConfig.douyin, await getDouyinDB(), 'sec_uid')
-      if (pushlistConfig.bilibili) await this.syncFilterConfigToDb(pushlistConfig.bilibili, await getBilibiliDB(), 'host_mid')
-      logger.info('[Config] pushlist的过滤配置已同步到数据库')
-    } catch (error) {
-      logger.error('[Config] 同步pushlist配置到数据库失败:', error)
-      throw error
-    }
-  }
-
-  /**
-   * 同步推送配置到数据库（通用方法）
-   * @param {any[]} items - 推送配置列表
-   * @param {any} db - 数据库实例
-   * @param {string} idField - ID字段名称
-   * @returns {Promise<void>}
-   */
-  async syncFilterConfigToDb(items, db, idField) {
-    for (const item of items) {
-      if (!item.switch) continue
-      const id = item[idField]
-      if (!id) continue
-
-      // 更新过滤模式
-      if (item.filterMode !== undefined) await db?.updateFilterMode(id, item.filterMode)
-      // 更新过滤词
-      const configWords = item.Keywords || []
-      const existingWords = await db?.getFilterWords(id)
-      // 删除不再需要的过滤词
-      for (const word of existingWords || []) {
-        if (!configWords.includes(word)) await db?.removeFilterWord(id, word)
-      }
-      // 添加新的过滤词
-      for (const word of configWords) {
-        if (!existingWords?.includes(word)) await db?.addFilterWord(id, word)
-      }
-      // 更新过滤标签
-      const configTags = item.Tags || []
-      const existingTags = await db?.getFilterTags(id)
-      // 删除不再需要的过滤标签
-      for (const tag of existingTags || []) {
-        if (!configTags.includes(tag)) await db?.removeFilterTag(id, tag)
-      }
-      // 添加新的过滤标签
-      for (const tag of configTags) {
-        if (!existingTags?.includes(tag)) await db?.addFilterTag(id, tag)
-      }
-    }
-  }
-
-  /**
-   * 合并两个对象并保留优先级
-   * @param {Object} objA 第一个对象（具有较高优先级）
-   * @param {Object} objB 第二个对象（具有较低优先级）
-   * @returns {{differences: boolean, result: Object}} 返回合并结果和差异状态
-   */
-  mergeObjectsWithPriority(objA, objB) {
-    let differences = false
 
     /**
-     * 自定义合并函数
-     * @param {Object} objValue - 目标对象的值
-     * @param {Object} srcValue - 源对象的值
-     * @returns {Object} 合并后的值
+     * 初始化配置系统
+     * - 创建配置目录（如果不存在）
+     * - 从默认配置目录复制配置文件
+     * - 合并用户配置和默认配置
+     * - 设置文件监听
+     * @returns {*} 当前实例
      */
-    const customizer = (objValue, srcValue) => {
-      if (_.isArray(objValue) && _.isArray(srcValue)) {
-        return objValue
-      } else if (_.isPlainObject(objValue) && _.isPlainObject(srcValue)) {
-        if (!_.isEqual(objValue, srcValue)) {
-          return _.mergeWith(_.cloneDeep(objValue), srcValue, customizer)
+    initCfg() {
+        // 用户配置目录路径
+        const path = `${Version.pluginPath}/config/config/`
+        // 创建配置目录（如果不存在）
+        if (!fs.existsSync(path)) fs.mkdirSync(path)
+        // 默认配置目录路径
+        const pathDef = `${Version.pluginPath}/config/default_config/`
+        // 获取所有yaml配置文件
+        const files = fs.readdirSync(pathDef).filter(file => file.endsWith('.yaml'))
+
+        // 处理每个配置文件
+        for (const file of files) {
+            // 如果用户配置不存在，复制默认配置
+            if (!fs.existsSync(`${path}${file}`)) {
+                fs.copyFileSync(`${pathDef}${file}`, `${path}${file}`)
+            } else {
+                // 解析用户配置和默认配置
+                const config = YAML.parse(fs.readFileSync(`${path}${file}`, 'utf8'))
+                const defConfig = YAML.parse(fs.readFileSync(`${pathDef}${file}`, 'utf8'))
+                // 合并配置并检查差异
+                /** @type {{differences: boolean, result: Record<string, any>}} */
+                const { differences, result } = this.mergeObjectsWithPriority(config, defConfig)
+                // 如果有差异，更新配置文件
+                if (differences) {
+                    fs.copyFileSync(`${pathDef}${file}`, `${path}${file}`)
+                    for (const key in result) {
+                        this.modify(/** @type {keyof ConfigType} */(file.replace('.yaml', '')), key, result[key])
+                    }
+                }
+            }
+            // 监听配置文件变化
+            this.watch(`${path}${file}`, file.replace('.yaml', ''), 'config')
         }
-      } else if (!_.isEqual(objValue, srcValue)) {
-        differences = true
-        return objValue !== undefined ? objValue : srcValue
-      }
-      return objValue !== undefined ? objValue : srcValue
+        return this
     }
 
-    let result = _.mergeWith(_.cloneDeep(objA), objB, customizer)
-
-    return {
-      differences,
-      result
+    /**
+     * 获取应用相关配置
+     * @returns {AppConfig} 应用配置对象，包含应用运行相关设置
+     * 
+     * @example
+     * // 获取应用配置
+     * const appConfig = Config.app
+     * console.log(appConfig.videotool)      // 访问视频解析工具总开关
+     * console.log(appConfig.defaulttool)    // 访问默认解析开关
+     * console.log(appConfig.removeCache)    // 访问缓存删除设置
+     * console.log(appConfig.priority)       // 访问优先级设置
+     * console.log(appConfig.sendforwardmsg) // 访问合并转发消息设置
+     * console.log(appConfig.Theme)          // 访问主题设置
+     * console.log(appConfig.renderScale)    // 访问渲染精度设置
+     * console.log(appConfig.APIServer)      // 访问API服务开关
+     * console.log(appConfig.APIServerPort)  // 访问API服务端口
+     */
+    get app() {
+        return this.getDefOrConfig('app')
     }
-  }
 
-  /**
-   * 同步配置到数据库
-   * 这个方法应该在所有模块都初始化完成后调用
-   */
-  async syncConfigToDatabase() {
-    try {
-      /** @type {PushlistConfig} */
-      const pushCfg = this.getDefOrConfig('pushlist')
-      const { getDouyinDB, getBilibiliDB } = await import('../db/index.js')
-      const douyinDB = await getDouyinDB()
-      const bilibiliDB = await getBilibiliDB()
-      // 同步配置到数据库
-      if (pushCfg.bilibili) await bilibiliDB?.syncConfigSubscriptions(pushCfg.bilibili)
-      if (pushCfg.douyin) await douyinDB?.syncConfigSubscriptions(pushCfg.douyin)
-      logger.debug('[BilibiliDB] + [DouyinDB] 配置已同步到数据库')
-    } catch (error) {
-      logger.error('同步配置到数据库失败:', error)
+    /**
+     * 获取Cookie相关配置
+     * @returns {CookiesConfig} Cookie配置对象，包含各平台Cookie信息
+     * 
+     * @example
+     * // 获取Cookie配置
+     * const cookieConfig = Config.cookies
+     * console.log(cookieConfig.douyin)   // 访问抖音Cookie
+     * console.log(cookieConfig.bilibili) // 访问B站Cookie
+     * console.log(cookieConfig.kuaishou) // 访问快手Cookie
+     */
+    get cookies() {
+        return this.getDefOrConfig('cookies')
     }
-  }
+
+    /**
+     * 获取抖音相关配置
+     * @returns {DouyinConfig} 抖音配置对象，包含抖音功能相关设置
+     * 
+     * @example
+     * // 获取抖音配置
+     * const douyinConfig = Config.douyin
+     * console.log(douyinConfig.douyintool)     // 访问抖音解析开关
+     * console.log(douyinConfig.douyinTip)      // 访问抖音解析可选列表
+     * console.log(douyinConfig.numcomments)    // 访问评论数量设置
+     * console.log(douyinConfig.commentsimg)    // 访问评论图设置
+     * console.log(douyinConfig.detailMusic)    // 访问背景音乐设置
+     * console.log(douyinConfig.sendHDrecord)   // 访问高清语音设置
+     * console.log(douyinConfig.push)           // 访问推送配置
+     */
+    get douyin() {
+        return this.getDefOrConfig('douyin')
+    }
+
+    /**
+     * 获取B站相关配置
+     * @returns {BilibiliConfig} B站配置对象，包含B站功能相关设置
+     * 
+     * @example
+     * // 获取B站配置
+     * const bilibiliConfig = Config.bilibili
+     * console.log(bilibiliConfig.bilibilitool)        // 访问B站解析开关
+     * console.log(bilibiliConfig.bilibiliTip)         // 访问B站解析可选列表
+     * console.log(bilibiliConfig.bilibilinumcomments) // 访问评论数量设置
+     * console.log(bilibiliConfig.senddynamicvideo)    // 访问动态视频设置
+     * console.log(bilibiliConfig.videopriority)       // 访问视频优先级设置
+     * console.log(bilibiliConfig.videoQuality)        // 访问视频画质设置
+     * console.log(bilibiliConfig.maxAutoVideoSize)    // 访问最大视频大小设置
+     * console.log(bilibiliConfig.displayContent)      // 访问显示内容设置
+     * console.log(bilibiliConfig.push)                // 访问推送配置
+     */
+    get bilibili() {
+        return this.getDefOrConfig('bilibili')
+    }
+
+    /**
+     * 获取推送列表配置
+     * @returns {PushlistConfig} 推送列表配置对象，包含各平台推送设置
+     * 
+     * @example
+     * // 获取推送列表配置
+     * const pushConfig = Config.pushlist
+     * console.log(pushConfig.douyin) // 访问抖音推送设置
+     */
+    get pushlist() {
+        return this.getDefOrConfig('pushlist')
+    }
+
+    /**
+     * 获取快手相关配置
+     * @returns {KuaishouConfig} 快手配置对象，包含快手功能相关设置
+     * 
+     * @example
+     * // 获取快手配置
+     * const kuaishouConfig = Config.kuaishou
+     * console.log(kuaishouConfig.comments)     // 访问评论设置
+     * console.log(kuaishouConfig.videoQuality) // 访问视频清晰度设置
+     */
+    get kuaishou() {
+        return this.getDefOrConfig('kuaishou')
+    }
+
+    /**
+     * 获取请求相关配置
+     * @returns {RequestConfig} 请求配置对象，包含超时、代理等设置
+     * 
+     * @example
+     * // 获取请求配置
+     * const requestConfig = Config.request
+     * console.log(requestConfig.timeout)    // 访问超时设置
+     * console.log(requestConfig['User-Agent']) // 访问用户代理
+     * console.log(requestConfig.proxy)      // 访问代理设置
+     */
+    get request() {
+        return this.getDefOrConfig('request')
+    }
+
+    /**
+     * 获取上传相关配置
+     * @returns {UploadConfig} 上传配置对象，包含视频上传、压缩等设置
+     * 
+     * @example
+     * // 获取上传配置
+     * const uploadConfig = Config.upload
+     * console.log(uploadConfig.sendbase64)     // 访问base64发送设置
+     * console.log(uploadConfig.compress)       // 访问视频压缩设置
+     * console.log(uploadConfig.usegroupfile)   // 访问群文件上传设置
+     */
+    get upload() {
+        return this.getDefOrConfig('upload')
+    }
+
+    /**
+     * 获取完整配置（包含数据库配置）
+     * @returns {Promise<any>} 完整配置对象
+     */
+    async All() {
+        const config = /** @type {ConfigType} */({})
+        const configPath = `${Version.pluginPath}/config/default_config/`
+        const files = fs.readdirSync(configPath).filter(file => file.endsWith('.yaml'))
+
+        for (const file of files) {
+            const name = /** @type {keyof ConfigType} */(file.replace('.yaml', ''))
+            config[name] = this.getDefOrConfig(name)
+            if (config.pushlist) {
+                const { getDouyinDB, getBilibiliDB } = await import('../db/index.js')
+                const douyinDB = await getDouyinDB()
+                const bilibiliDB = await getBilibiliDB()
+                try {
+                    if (config.pushlist.douyin) {
+                        for (const item of config.pushlist.douyin) {
+                            const filterWords = await douyinDB?.getFilterWords(item.sec_uid)
+                            const filterTags = await douyinDB?.getFilterTags(item.sec_uid)
+                            const userInfo = await douyinDB?.getDouyinUser(item.sec_uid)
+                            if (userInfo) item.filterMode = userInfo.filterMode || 'blacklist'
+                            item.Keywords = filterWords
+                            item.Tags = filterTags
+                        }
+                    }
+                    if (config.pushlist.bilibili) {
+                        for (const item of config.pushlist.bilibili) {
+                            const filterWords = await bilibiliDB?.getFilterWords(item.host_mid)
+                            const filterTags = await bilibiliDB?.getFilterTags(item.host_mid)
+                            const userInfo = await bilibiliDB?.getOrCreateBilibiliUser(item.host_mid)
+                            if (userInfo) {
+                                item.filterMode = userInfo.filterMode || 'blacklist'
+                                // 🚨 从数据库拉取专属特权并反序列化赋值给配置
+                                if (userInfo.parsedynamic) {
+                                    try { item.parsedynamic = JSON.parse(userInfo.parsedynamic) } catch (e) { }
+                                }
+                            }
+                            item.Keywords = filterWords
+                            item.Tags = filterTags
+                        }
+                    }
+                } catch (error) {
+                    logger.error(`从数据库获取过滤配置时出错: ${error}`)
+                }
+            }
+        }
+        return config
+    }
+
+    /**
+     * 获取合并后的配置（默认配置 + 用户配置）
+     * 用户配置会覆盖默认配置中的相同项
+     * @param {keyof ConfigType} name - 配置文件名称（不包含.yaml扩展名）
+     * @returns {any} 合并后的配置对象
+     */
+    getDefOrConfig(name) {
+        // 获取默认配置
+        const def = this.getdefSet(name)
+        // 获取用户配置
+        const config = this.getConfig(name)
+        // 合并配置，用户配置优先级更高
+        return { ...def, ...config }
+    }
+
+    /**
+     * 获取默认配置
+     * @param {string} name - 配置文件名称（不包含.yaml扩展名）
+     * @returns {any} 默认配置对象
+     * 
+     * @example
+     * // 获取默认的cookies配置
+     * const defaultCookies = Config.getdefSet('cookies')
+     */
+    getdefSet(name) {
+        return this.getYaml('default_config', name)
+    }
+
+    /**
+     * 获取用户配置
+     * @param {string} name - 配置文件名称（不包含.yaml扩展名）
+     * @returns {any} 用户配置对象
+     * 
+     * @example
+     * // 获取用户配置的douyin设置
+     * const userDouyinConfig = Config.getConfig('douyin')
+     */
+    getConfig(name) {
+        return this.getYaml('config', name)
+    }
+
+    /**
+     * 获取配置yaml文件内容
+     * @param {string} type - 配置类型，'default_config'表示默认配置，'config'表示用户配置
+     * @param {string} name - 配置文件名称（不包含.yaml扩展名）
+     * @returns {any} 返回解析后的配置对象
+     * 
+     * @example
+     * // 获取默认配置
+     * const defaultConfig = Config.getYaml('default_config', 'app')
+     * 
+     * @example
+     * // 获取用户配置
+     * const userConfig = Config.getYaml('config', 'cookies')
+     */
+    getYaml(type, name) {
+        // 构建配置文件完整路径
+        const file = `${Version.pluginPath}/config/${type}/${name}.yaml`
+        // 构建缓存键名
+        const key = `${type}.${name}`
+
+        // 如果配置已缓存，直接返回
+        if (this.config[key]) return this.config[key]
+
+        try {
+            // 检查文件是否存在
+            if (!fs.existsSync(file)) {
+                // 文件不存在时返回空对象
+                this.config[key] = {}
+            } else {
+                // 读取并解析YAML文件
+                this.config[key] = YAML.parse(fs.readFileSync(file, 'utf8'))
+            }
+        } catch (error) {
+            // 解析失败时返回空对象
+            logger.warn(`[Config] 解析配置文件失败: ${file}`)
+            this.config[key] = {}
+        }
+
+        // 监听配置文件变化
+        this.watch(file, name, type)
+
+        // 返回配置对象
+        return this.config[key]
+    }
+
+    /**
+     * 监听配置文件变化
+     * @param {string} file - 要监听的文件完整路径
+     * @param {string} name - 配置文件名称（不带扩展名）
+     * @param {string} [type='default_config'] - 配置类型，默认为默认配置
+     * @returns {void}
+     */
+    watch(file, name, type = 'default_config') {
+        const key = `${type}.${name}`
+        // 如果已经在监听，则直接返回
+        if (this.watcher[key]) return
+
+        // 创建文件监听器
+        const watcher = chokidar.watch(file)
+        // 文件变化时的处理
+        watcher.on('change', async () => {
+            // 删除缓存的配置
+            delete this.config[key]
+            // 记录日志
+            logger.mark(`[${Version.pluginName}][修改配置文件][${type}][${name}]`)
+            // 如果是pushlist配置文件变化，同步数据库配置
+            if (name === 'pushlist' && type === 'config') {
+                try {
+                    await this.syncPushlistToDatabase()
+                } catch (error) {
+                    logger.error('[Config] 文件监听同步数据库失败:', error)
+                } finally {
+                    await this.syncConfigToDatabase() // 同步配置到数据库
+                }
+            }
+        })
+
+        // 保存监听器实例
+        this.watcher[key] = watcher
+    }
+
+    /**
+     * 修改配置文件中的指定项
+     * @param {keyof ConfigType} name - 配置文件名
+     * @param {string} key - 要修改的配置项键名
+     * @param {*} value - 要设置的新值
+     * @param {'config' | 'default_config'} [type='config'] - 配置类型，默认为用户配置
+     * @returns {void}
+     * 
+     * @example
+     * // 修改应用配置中的优先级
+     * Config.modify('app', 'priority', 1)
+     * 
+     * @example
+     * // 修改抖音配置中的评论设置
+     * Config.modify('douyin', 'comments', true)
+     * 
+     * @example
+     * // 修改默认配置中的Cookie
+     * Config.modify('cookies', 'douyin', 'your-cookie', 'default_config')
+     * 
+     */
+    modify(name, key, value, type = 'config') {
+        // 构建配置文件完整路径
+        const path = `${Version.pluginPath}/config/${type}/${name}.yaml`
+        // 使用YamlReader修改配置
+        new YamlReader(path).set(key, value)
+        // 清除对应的配置缓存
+        delete this.config[`${type}.${name}`]
+    }
+
+    /**
+     * 同步pushlist配置到数据库
+     * @returns {Promise<void>}
+     */
+    async syncPushlistToDatabase() {
+        const { getDouyinDB, getBilibiliDB } = await import('../db/index.js')
+        try {
+            /** @type {PushlistConfig} */
+            const pushlistConfig = this.getDefOrConfig('pushlist')
+            if (pushlistConfig.douyin) await this.syncFilterConfigToDb(pushlistConfig.douyin, await getDouyinDB(), 'sec_uid')
+            if (pushlistConfig.bilibili) await this.syncFilterConfigToDb(pushlistConfig.bilibili, await getBilibiliDB(), 'host_mid')
+            logger.info('[Config] pushlist的过滤配置已同步到数据库')
+        } catch (error) {
+            logger.error('[Config] 同步pushlist配置到数据库失败:', error)
+            throw error
+        }
+    }
+
+    /**
+     * 同步推送配置到数据库（通用方法）
+     * @param {any[]} items - 推送配置列表
+     * @param {any} db - 数据库实例
+     * @param {string} idField - ID字段名称
+     * @returns {Promise<void>}
+     */
+    async syncFilterConfigToDb(items, db, idField) {
+        for (const item of items) {
+            if (!item.switch) continue
+            const id = item[idField]
+            if (!id) continue
+
+            // 更新解析选项
+            if (item.parsedynamic !== undefined && db?.updateParseDynamic) await db.updateParseDynamic(id, JSON.stringify(item.parsedynamic))
+            // 更新过滤模式
+            if (item.filterMode !== undefined) await db?.updateFilterMode(id, item.filterMode)
+            // 更新过滤词
+            const configWords = item.Keywords || []
+            const existingWords = await db?.getFilterWords(id)
+            // 删除不再需要的过滤词
+            for (const word of existingWords || []) {
+                if (!configWords.includes(word)) await db?.removeFilterWord(id, word)
+            }
+            // 添加新的过滤词
+            for (const word of configWords) {
+                if (!existingWords?.includes(word)) await db?.addFilterWord(id, word)
+            }
+            // 更新过滤标签
+            const configTags = item.Tags || []
+            const existingTags = await db?.getFilterTags(id)
+            // 删除不再需要的过滤标签
+            for (const tag of existingTags || []) {
+                if (!configTags.includes(tag)) await db?.removeFilterTag(id, tag)
+            }
+            // 添加新的过滤标签
+            for (const tag of configTags) {
+                if (!existingTags?.includes(tag)) await db?.addFilterTag(id, tag)
+            }
+        }
+    }
+
+    /**
+     * 合并两个对象并保留优先级
+     * @param {Object} objA 第一个对象（具有较高优先级）
+     * @param {Object} objB 第二个对象（具有较低优先级）
+     * @returns {{differences: boolean, result: Object}} 返回合并结果和差异状态
+     */
+    mergeObjectsWithPriority(objA, objB) {
+        let differences = false
+
+        /**
+         * 自定义合并函数
+         * @param {Object} objValue - 目标对象的值
+         * @param {Object} srcValue - 源对象的值
+         * @returns {Object} 合并后的值
+         */
+        const customizer = (objValue, srcValue) => {
+            if (_.isArray(objValue) && _.isArray(srcValue)) {
+                return objValue
+            } else if (_.isPlainObject(objValue) && _.isPlainObject(srcValue)) {
+                if (!_.isEqual(objValue, srcValue)) {
+                    return _.mergeWith(_.cloneDeep(objValue), srcValue, customizer)
+                }
+            } else if (!_.isEqual(objValue, srcValue)) {
+                differences = true
+                return objValue !== undefined ? objValue : srcValue
+            }
+            return objValue !== undefined ? objValue : srcValue
+        }
+
+        let result = _.mergeWith(_.cloneDeep(objA), objB, customizer)
+
+        return {
+            differences,
+            result
+        }
+    }
+
+    /**
+     * 同步配置到数据库
+     * 这个方法应该在所有模块都初始化完成后调用
+     */
+    async syncConfigToDatabase() {
+        try {
+            /** @type {PushlistConfig} */
+            const pushCfg = this.getDefOrConfig('pushlist')
+            const { getDouyinDB, getBilibiliDB } = await import('../db/index.js')
+            const douyinDB = await getDouyinDB()
+            const bilibiliDB = await getBilibiliDB()
+            // 同步配置到数据库
+            if (pushCfg.bilibili) await bilibiliDB?.syncConfigSubscriptions(pushCfg.bilibili)
+            if (pushCfg.douyin) await douyinDB?.syncConfigSubscriptions(pushCfg.douyin)
+            logger.debug('[BilibiliDB] + [DouyinDB] 配置已同步到数据库')
+        } catch (error) {
+            logger.error('同步配置到数据库失败:', error)
+        }
+    }
 
 }
 
@@ -672,19 +680,19 @@ let configInstance
  * @returns {Config$} 配置实例
  */
 const getConfigInstance = () => {
-  if (!configInstance) {
-    configInstance = new Proxy(new Cfg().initCfg(), {
-      /**
-       * @param {string} prop - 属性名
-       * @returns 
-       */
-      get(target, prop) {
-        if (prop in target) return target[/** @type {keyof Cfg} */(prop)]
-        return target.getDefOrConfig(/** @type {keyof ConfigType} */(prop))
-      }
-    })
-  }
-  return configInstance
+    if (!configInstance) {
+        configInstance = new Proxy(new Cfg().initCfg(), {
+            /**
+             * @param {string} prop - 属性名
+             * @returns 
+             */
+            get(target, prop) {
+                if (prop in target) return target[/** @type {keyof Cfg} */(prop)]
+                return target.getDefOrConfig(/** @type {keyof ConfigType} */(prop))
+            }
+        })
+    }
+    return configInstance
 }
 
 /**
@@ -692,12 +700,12 @@ const getConfigInstance = () => {
  * @type {Config$}
  */
 export default new Proxy(/** @type {Config$} */({}), {
-  /**
-   * 获取配置属性值
-   * @param {string} prop - 属性名
-   * @returns {*} 属性值
-   */
-  get(target, prop) {
-    return getConfigInstance()[/** @type {keyof Config$} */(prop)]
-  }
+    /**
+     * 获取配置属性值
+     * @param {string} prop - 属性名
+     * @returns {*} 属性值
+     */
+    get(target, prop) {
+        return getConfigInstance()[/** @type {keyof Config$} */(prop)]
+    }
 })
