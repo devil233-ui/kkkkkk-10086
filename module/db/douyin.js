@@ -505,6 +505,21 @@ export class DouyinDBBase {
       const remark = item.remark ?? ''
       // 创建或更新抖音用户记录
       await this.getOrCreateDouyinUser(sec_uid, short_id, remark)
+      // ===== 核心修复：将 YAML 里的过滤词、标签和模式完美同步到 SQLite 数据库 =====
+      if (item.filterMode) {
+        await this.updateFilterMode(sec_uid, item.filterMode)
+      }
+      if (item.Keywords && Array.isArray(item.Keywords)) {
+        const dbWords = await this.getFilterWords(sec_uid)
+        for (const word of dbWords) { if (!item.Keywords.includes(word)) await this.removeFilterWord(sec_uid, word) }
+        for (const word of item.Keywords) { if (!dbWords.includes(word)) await this.addFilterWord(sec_uid, word) }
+      }
+      if (item.Tags && Array.isArray(item.Tags)) {
+        const dbTags = await this.getFilterTags(sec_uid)
+        for (const tag of dbTags) { if (!item.Tags.includes(tag)) await this.removeFilterTag(sec_uid, tag) }
+        for (const tag of item.Tags) { if (!dbTags.includes(tag)) await this.addFilterTag(sec_uid, tag) }
+      }
+      // =========================================================================
       // 处理该用户的所有群组订阅
       for (const groupWithBot of item.group_id) {
         const [groupId, botId] = groupWithBot.split(':')

@@ -1,5 +1,5 @@
 import { Base, Render, Config, Networks, mergeFile, Common, baseHeaders, downloadFile, uploadFile, downloadVideo } from '../../utils/index.js'
-import { bilibiliApiUrls, getBilibiliData, DynamicType, AdditionalType } from '@ikenxuan/amagi'
+import { bilibiliApiUrls, DynamicType, AdditionalType } from '@ikenxuan/amagi'
 import common from '../../../../../lib/common/common.js'
 import { bilibiliComments, checkCk, genParams } from './index.js'
 import fs from 'fs'
@@ -80,7 +80,7 @@ export class Bilibili extends Base {
             // ====== Amagi v6 全局风控防护与 API 向下兼容层 ======
             if (!this.amagi._v6_patched) {
                 const fetcher = (await import("@ikenxuan/amagi")).bilibiliFetcher;
-                this.amagi.getBilibiliData = async (name, params) => {
+                this.fetchBili = async (name, params) => {
                     const apiMap = {
                         "单个视频作品数据": "fetchVideoInfo",
                         "用户主页数据": "fetchUserCard",
@@ -115,9 +115,11 @@ export class Bilibili extends Base {
                     }
 
                     // 强行注入上下文的 ID (防漏传)
-                    if (!p.bvid && data?.bvid) p.bvid = data.bvid;
-                    if (!p.dynamic_id && data?.dynamic_id) p.dynamic_id = data.dynamic_id;
-                    if (!p.host_mid && data?.sec_uid) p.host_mid = data.sec_uid;
+                    const sourceData = typeof iddata !== 'undefined' ? iddata : (typeof data !== 'undefined' ? data : {});
+                    if (!p.bvid && sourceData?.bvid) p.bvid = sourceData.bvid;
+                    if (!p.dynamic_id && sourceData?.dynamic_id) p.dynamic_id = sourceData.dynamic_id;
+                    if (!p.host_mid && sourceData?.sec_uid) p.host_mid = sourceData.sec_uid;
+                    if (!p.host_mid && sourceData?.host_mid) p.host_mid = sourceData.host_mid;
                     if (p.aweme_id && !p.bvid) p.bvid = p.aweme_id;
                     if (p.id && !p.bvid && !p.dynamic_id) p.bvid = p.id;
 
@@ -177,142 +179,112 @@ export class Bilibili extends Base {
             if (this.Type === 'undefined') return true
             !iddata?.Episode && (Config.bilibili?.bilibiliTip || []).includes('提示信息') && await this.e.reply('检测到B站链接，开始解析')
             switch (this.Type) {
-                case 'one_video': {
-                    const infoData = await this.amagi.getBilibiliData('单个视频作品数据', { bvid: iddata.bvid, typeMode: 'strict' })
-                    const playUrlData = await this.amagi.getBilibiliData('单个视频下载信息数据', {
+                case "one_video": {
+                    // 1. 获取视频基本信息
+                    const infoData = await this.fetchBili("单个视频作品数据", { bvid: String(iddata.bvid) });
+                    if (!infoData?.data?.data) return false;
+
+                    const targetCid = iddata.p ? (infoData.data.data.pages[iddata.p - 1]?.cid || infoData.data.data.cid) : infoData.data.data.cid;
+
+                    // 2. 获取带音视频分离的 DASH 高清流 (🚨 注入 qn:120, fnval:4048 强行禁用 MCDN 节点)
+                    let playUrlData = await this.amagi.bilibili.fetcher.fetchVideoStreamUrl({
                         avid: infoData.data.data.aid,
-                        cid: iddata.p ? (infoData.data.data.pages[iddata.p - 1]?.cid || infoData.data.data.cid) : infoData.data.data.cid,
-                        typeMode: 'strict'
-                    })
-                    // const playUrl = bilibiliApiUrls.视频流信息({ avid: infoData.data.aid, cid: infoData.data.cid })
-                    this.islogin = (await checkCk()).Status === 'isLogin'
+                        cid: targetCid,
+                        qn: 120,
+                        fnval: 4048,
+                        fourk: 1,
+                        typeMode: "strict"
+                    }).catch(() => null);
 
-                    const { owner, pic, title, stat, desc } = infoData.data.data
-                    const { name } = owner
-                    const { coin, like, share, view, favorite, danmaku } = stat
+                    // 3. 获取单文件直链的 DURL 兜底流
+                    const { bilibiliApiUrls } = await import("@ikenxuan/amagi");
+                    let nockData = null;
+                    try {
+                        nockData = await new Networks({
+                            url: bilibiliApiUrls.getVideoStream({ avid: infoData.data.data.aid, cid: targetCid }) + "&platform=html5",
+                            headers: this.headers
+                        }).getData();
+                    } catch (e) {
+                        logger.error("获取兜底视频流失败", e);
+                    }
 
-                    this.downloadfilename = title.substring(0, 50).replace(/[\\/:*?"<>|\r\n\s]/g, ' ')
+                    this.islogin = (await checkCk()).Status === "isLogin";
+                    const { owner, pic, title, stat, desc } = infoData.data.data;
+                    const { name } = owner || { name: "未知" };
+                    const { coin, like, share, view, favorite, danmaku } = stat || { coin: 0, like: 0, share: 0, view: 0, favorite: 0, danmaku: 0 };
 
-                    const videoStreamUrl = !this.islogin && bilibiliApiUrls.视频流信息({
-                        avid: infoData.data.data.aid,
-                        cid: iddata.p ? (infoData.data.data.pages[iddata.p - 1]?.cid || infoData.data.data.cid) : infoData.data.data.cid
-                    })
-                    const Params = !this.islogin && await genParams(videoStreamUrl || '')
-                    const nockData = !this.islogin && await new Networks({
-                        url: `${videoStreamUrl}${Params}`,
-                        headers: {
-                            ...baseHeaders,
-                            Referer: 'https://www.bilibili.com',
-                            Cookie: ''
-                        }
-                    }).getData()
+                    this.downloadfilename = (title || "视频").substring(0, 50).replace(/[\\/:*?"<>|\r\n\s]/g, " ");
 
-                    // 构建回复内容数组
-                    /**
-                     * @type {(string | import('../../utils/Render.js').ImageData)[]}
-                     */
-                    const replyContent = []
-
-                    // 如果配置项不存在，则不显示任何内容
-                    if ((Config.bilibili?.bilibiliTip || []).includes('简介') && (Config.bilibili?.displayContent || []).length > 0) {
-                        /**
-                         * @type {Object.<string, any>}
-                         */
+                    const replyContent = [];
+                    if ((Config.bilibili?.bilibiliTip || []).includes("简介") && (Config.bilibili?.displayContent || []).length > 0) {
                         const contentMap = {
                             cover: await segment.image(pic),
                             title: `\n📺 标题: ${title}\n`,
                             author: `\n👤 作者: ${name}\n`,
                             stats: this.formatVideoStats(view, danmaku, like, coin, share, favorite),
                             desc: `\n\n📝 简介: ${desc}`
-                        }
-
-                        // 重新排序
-                        const fixedOrder = ['cover', 'title', 'author', 'stats', 'desc']
-
+                        };
+                        const fixedOrder = ["cover", "title", "author", "stats", "desc"];
                         fixedOrder.forEach(item => {
-                            if ((Config.bilibili?.displayContent || []).includes(item) && contentMap[item]) {
-                                replyContent.push(contentMap[item])
-                            }
-                        })
-
+                            if ((Config.bilibili?.displayContent || []).includes(item) && contentMap[item]) replyContent.push(contentMap[item]);
+                        });
                         if (replyContent.length > 0) {
-                            await this.e.reply(this.mkMsg(replyContent, [
-                                {
-                                    text: "视频链接",
-                                    link: 'https://b23.tv/' + infoData.data.data.bvid
-                                }
-                            ]))
+                            await this.e.reply(this.mkMsg(replyContent, [{ text: "视频链接", link: "https://b23.tv/" + infoData.data.data.bvid }]));
                         }
                     }
 
-                    let videoSize = ''
-                    /** @type {{ accept_description: string[], videoList: videoDownloadUrlList, selectedQuality: string }} */
-                    let correctList = { accept_description: [], videoList: [], selectedQuality: '未知' } // 提供默认值
+                    let videoSize = "0.00";
+                    let correctList = { accept_description: [], videoList: [], selectedQuality: "未知" };
 
-                    if (this.islogin && Config.bilibili.videopriority === false) {
-                        /** 过滤视频流信息对象，排除清晰度重复的视频流 */
-                        const simplify = playUrlData.data.data.dash.video.filter((/** @type {{ id: number }} */ item, /** @type {any} */ index, /** @type {any[]}[]} */ self) => {
-                            return self.findIndex((/** @type {{ id: any }} */ t) => {
-                                return t.id === item.id
-                            }) === index
-                        })
-                        /** 替换原始的视频信息对象 */
-                        playUrlData.data.data.dash.video = simplify
-                        /** 给视频信息对象删除不符合条件的视频流 */
+                    // 画质选择与大小计算
+                    if (this.islogin && (Config.bilibili.videoQuality > 64 || Config.bilibili.videoQuality === 0) && playUrlData?.data?.data?.dash?.video) {
+                        const simplify = playUrlData.data.data.dash.video.filter((item, index, self) => self.findIndex(t => t.id === item.id) === index);
+                        playUrlData.data.data.dash.video = simplify;
                         correctList = await bilibiliProcessVideos({
-                            accept_description: playUrlData.data.data.accept_description,
+                            accept_description: playUrlData.data.data.accept_description || [],
                             bvid: infoData.data.data.bvid,
                             qn: Config.bilibili.videoQuality
-                        }, simplify, playUrlData.data.data.dash.audio[0].base_url)
-                        playUrlData.data.data.dash.video = correctList.videoList
-                        playUrlData.data.data.accept_description = correctList.accept_description
-                        /** 获取第一个视频流的大小 */
-                        videoSize = await getvideosize(correctList.videoList[0]?.base_url || '', playUrlData.data.data.dash.audio[0].base_url, infoData.data.data.bvid)
-                    } else {
-                        videoSize = (nockData.data.durl[0].size / (1024 * 1024)).toFixed(2)
+                        }, simplify, playUrlData.data.data.dash.audio?.[0]?.base_url || "");
+                        
+                        playUrlData.data.data.dash.video = correctList.videoList;
+                        playUrlData.data.data.accept_description = correctList.accept_description;
+                        videoSize = await getvideosize(correctList.videoList[0]?.base_url || "", playUrlData.data.data.dash.audio?.[0]?.base_url || "", infoData.data.data.bvid);
+                    } else if (nockData?.data?.durl) {
+                        videoSize = (nockData.data.durl[0].size / (1024 * 1024)).toFixed(2);
                     }
-                    if ((Config.bilibili?.bilibiliTip || []).includes('评论图')) {
-                        const commentsData = await this.amagi.getBilibiliData('评论数据', {
-                            number: Config.bilibili.bilibilinumcomments,
-                            type: 1,
-                            oid: infoData.data.data.aid.toString(),
-                            typeMode: 'strict'
-                        })
-                        const commentsdata = Config.bilibili.bilibilinumcomments && Config.bilibili?.bilibilinumcomments > 0 && bilibiliComments(commentsData.data)
+
+                    // 评论图渲染
+                    if ((Config.bilibili?.bilibiliTip || []).includes("评论图")) {
+                        const commentsData = await this.fetchBili("评论数据", { number: Config.bilibili.bilibilinumcomments, type: 1, oid: infoData.data.data.aid.toString() });
+                        const commentsdata = Config.bilibili.bilibilinumcomments && Config.bilibili?.bilibilinumcomments > 0 && bilibiliComments(commentsData.data);
                         if (commentsdata?.length) {
-                            img = await Render('bilibili/comment', {
-                                Type: '视频',
+                            img = await Render("bilibili/comment", {
+                                Type: "视频",
                                 CommentsData: commentsdata,
                                 CommentLength: Config.bilibili.realCommentCount ? Common.count(infoData.data.data.stat.reply) : String(commentsdata.length),
-                                share_url: 'https://b23.tv/' + infoData.data.data.bvid,
-                                Clarity: Config.bilibili.videopriority === true || !this.islogin ? nockData.data.accept_description[0] : correctList?.selectedQuality,
-                                VideoSize: Config.bilibili.videopriority === true || !this.islogin ? (nockData.data.durl[0]?.size / (1024 * 1024) || 0).toFixed(2) : videoSize,
+                                share_url: "https://b23.tv/" + infoData.data.data.bvid,
+                                Clarity: Config.bilibili.videopriority === true || !this.islogin ? nockData?.data?.accept_description?.[nockData.data.accept_description.length - 1] : playUrlData?.data?.data?.accept_description?.[0],
+                                VideoSize: videoSize,
                                 ImageLength: 0,
-                                shareurl: 'https://b23.tv/' + infoData.data.data.bvid
-                            })
-                            await this.e.reply(this.mkMsg(img, [
-                                {
-                                    text: "视频链接",
-                                    link: 'https://b23.tv/' + infoData.data.data.bvid
-                                }
-                            ]))
+                                shareurl: "https://b23.tv/" + infoData.data.data.bvid
+                            });
+                            await this.e.reply(this.mkMsg(img, [{ text: "视频链接", link: "https://b23.tv/" + infoData.data.data.bvid }]));
                         }
                     }
 
-                    if ((Config.upload.usefilelimit && Number(videoSize) > Number(Config.upload.filelimit)) && (Config.bilibili?.bilibiliTip || []).includes('视频')) {
-                        await this.e.reply(`设定的最大上传大小为 ${Config.upload.filelimit}MB\n当前解析到的视频大小为 ${Number(videoSize)}MB\n` + '视频太大了，还是去B站看吧~', { reply: true })
+                    if ((Config.upload.usefilelimit && Number(videoSize) > Number(Config.upload.filelimit)) && (Config.bilibili?.bilibiliTip || []).includes("视频")) {
+                        await this.e.reply(`设定的最大上传大小为 ${Config.upload.filelimit}MB\n当前解析到的视频大小为 ${Number(videoSize)}MB\n视频太大了，还是去B站看吧~`, { reply: true });
                     } else {
-                        await this.getvideo(
-                            Config.bilibili.videopriority === true
-                                ? { playUrlData: nockData }
-                                : {
-                                    infoData: infoData.data, playUrlData: playUrlData.data
-                                })
+                        if (Config.bilibili.videoQuality !== 0 && Config.bilibili.videoQuality < 64) {
+                            this.islogin = false; 
+                        }
+                        const finalPlayUrlData = (Config.bilibili.videoQuality !== 0 && Config.bilibili.videoQuality < 64) || !this.islogin ? nockData?.data : playUrlData?.data;
+                        await this.getvideo({ infoData: infoData.data, playUrlData: finalPlayUrlData });
                     }
-                    break
+                    break;
                 }
                 case 'bangumi_video_info': {
-                    const videoInfo = await this.amagi.getBilibiliData('番剧基本信息数据', { [iddata.isEpid ? 'ep_id' : 'season_id']: iddata.realid, typeMode: 'strict' })
+                    const videoInfo = await this.fetchBili('番剧基本信息数据', { [iddata.isEpid ? 'ep_id' : 'season_id']: iddata.realid, typeMode: 'strict' })
                     this.islogin = (await checkCk()).Status === 'isLogin'
                     this.isVIP = (await checkCk()).isVIP
 
@@ -625,9 +597,9 @@ export class Bilibili extends Base {
                     break;
                 }
                 case 'live_room_detail': {
-                    const liveInfo = await this.amagi.getBilibiliData('直播间信息', { room_id: iddata.room_id, typeMode: 'strict' })
-                    const roomInitInfo = await this.amagi.getBilibiliData('直播间初始化信息', { room_id: iddata.room_id, typeMode: 'strict' })
-                    const userProfileData = await this.amagi.getBilibiliData('用户主页数据', { host_mid: roomInitInfo.data.data.uid, typeMode: 'strict' })
+                    const liveInfo = await this.fetchBili('直播间信息', { room_id: iddata.room_id, typeMode: 'strict' })
+                    const roomInitInfo = await this.fetchBili('直播间初始化信息', { room_id: iddata.room_id, typeMode: 'strict' })
+                    const userProfileData = await this.fetchBili('用户主页数据', { host_mid: roomInitInfo.data.data.uid, typeMode: 'strict' })
 
                     if (roomInitInfo.data.data.live_status === 0) {
                         await this.e.reply(`「${userProfileData.data.data.card.name}」\n未开播，正在休息中~`)
@@ -668,73 +640,70 @@ export class Bilibili extends Base {
      * @returns {Promise<void>}
      */
     async getvideo({ infoData, playUrlData }) {
-        /** 获取视频 => FFMPEG合成 */
-        // 如果配置了视频优先，则设置为未登录状态
-        if (Config.bilibili.videopriority === true) this.islogin = false
+        logger.mark("[B站解析] 开始提取视频流...");
+        if (Config.bilibili.videopriority === true) this.islogin = false;
 
-        // 如果已登录
-        if (this.islogin) {
-            // 获取视频和音频的基础URL和ID
-            const isOneVideo = this.Type === 'one_video'
-            const videoId = isOneVideo ? infoData && infoData.data.bvid : infoData && infoData.result.season_id
-            const seasonId = isOneVideo ? infoData && infoData.data.bvid : infoData && infoData.result.season_id
-            const videoUrl = isOneVideo && playUrlData && playUrlData.data?.dash?.video[0]?.base_url ? playUrlData.data.dash.video[0].base_url : playUrlData?.result?.dash.video[0]?.base_url
-            const audioUrl = isOneVideo && playUrlData && playUrlData.data?.dash?.audio[0]?.base_url ? playUrlData.data.dash.audio[0].base_url : playUrlData?.result?.dash.audio[0]?.base_url
+        const isOneVideo = this.Type === "one_video";
+        const videoId = isOneVideo ? infoData?.data?.bvid : infoData?.result?.season_id;
+        
+        // 🚨 终极核武器：强制替换所有 P2P 域名为官方华为云 CDN，根治海外服务器 3000ms 丢包断流！
+        const replaceHost = (url) => url ? url.replace(/^https?:\/\/[^\/]+/, 'https://upos-sz-mirrorhw.bilivideo.com') : url;
 
-            // 并行下载视频和音频
-            const [bmp4, bmp3] = await Promise.all([
-                downloadFile(videoUrl, {
-                    title: `Bil_V_${videoId}.mp4`,
-                    headers: {
-                        Referer: this.headers.Referer,
-                        Cookie: ''
-                    }
-                }),
-                downloadFile(audioUrl, {
-                    title: `Bil_A_${videoId}.mp3`,
-                    headers: {
-                        Referer: this.headers.Referer,
-                        Cookie: ''
-                    }
-                })
-            ])
+        switch (this.islogin) {
+            case true: {
+                // DASH 高清流 (音视频分离)
+                const videoUrl = replaceHost(isOneVideo ? playUrlData?.data?.dash?.video?.[0]?.base_url : playUrlData?.result?.dash?.video?.[0]?.base_url);
+                const audioUrl = replaceHost(isOneVideo ? playUrlData?.data?.dash?.audio?.[0]?.base_url : playUrlData?.result?.dash?.audio?.[0]?.base_url);
 
-            if (bmp4.filepath && bmp3.filepath) {
-                await mergeFile('二合一（视频 + 音频）', {
-                    path: bmp4.filepath,
-                    path2: bmp3.filepath,
-                    resultPath: Common.tempDri.video + `Bil_Result_${seasonId}.mp4`,
-                    callback: async (/** @type {boolean} */ success, /** @type {string} */ resultPath) => {
-                        if (!success) {
-                            await Common.removeFile(bmp4.filepath, true)
-                            await Common.removeFile(bmp3.filepath, true)
-                            return true
+                if (!videoUrl || !audioUrl) {
+                    await this.e.reply("⚠️ 未获取到有效的音视频流 (可能为大会员专属或地区限制)");
+                    return;
+                }
+
+                // 加入 baseHeaders 伪装标准 User-Agent 防止被直接拉黑
+                const downloadHeaders = { ...baseHeaders, Referer: "https://www.bilibili.com", Cookie: "" };
+                const [bmp4, bmp3] = await Promise.all([
+                    downloadFile(videoUrl, { title: `Bil_V_${videoId}.mp4`, headers: downloadHeaders }),
+                    downloadFile(audioUrl, { title: `Bil_A_${videoId}.mp3`, headers: downloadHeaders })
+                ]);
+
+                if (bmp4?.filepath && bmp3?.filepath) {
+                    await mergeFile("二合一（视频 + 音频）", {
+                        path: bmp4.filepath,
+                        path2: bmp3.filepath,
+                        resultPath: Common.tempDri.video + `Bil_Result_${videoId}.mp4`,
+                        callback: async (success, resultPath) => {
+                            if (!success) {
+                                await Common.removeFile(bmp4.filepath, true);
+                                await Common.removeFile(bmp3.filepath, true);
+                                return true;
+                            }
+                            const filePath = Common.tempDri.video + `${Config.app.removeCache ? "tmp_" + Date.now() : this.downloadfilename}.mp4`;
+                            fs.renameSync(resultPath, filePath);
+                            await Common.removeFile(bmp4.filepath, true);
+                            await Common.removeFile(bmp3.filepath, true);
+
+                            const fileSizeInMB = Number((fs.statSync(filePath).size / (1024 * 1024)).toFixed(2));
+                            return fileSizeInMB > (Config.upload?.filelimit || 100)
+                                ? await uploadFile(this.e, { filepath: filePath, totalBytes: fileSizeInMB, originTitle: this.downloadfilename }, "", { useGroupFile: true })
+                                : await uploadFile(this.e, { filepath: filePath, totalBytes: fileSizeInMB, originTitle: this.downloadfilename }, "");
                         }
-
-                        const filePath = Common.tempDri.video + `${Config.app.removeCache ? 'tmp_' + Date.now() : this.downloadfilename}.mp4`
-                        fs.renameSync(resultPath, filePath)
-                        logger.mark(`视频文件重命名完成: ${resultPath.split('/').pop()} -> ${filePath.split('/').pop()}`)
-                        logger.mark('正在尝试删除缓存文件')
-                        await Common.removeFile(bmp4.filepath, true)
-                        await Common.removeFile(bmp3.filepath, true)
-
-                        const stats = fs.statSync(filePath)
-                        const fileSizeInMB = Number((stats.size / (1024 * 1024)).toFixed(2))
-
-                        // 根据文件大小选择上传方式
-                        return fileSizeInMB > (Config.upload?.filelimit || 100)
-                            ? await uploadFile(this.e, { filepath: filePath, totalBytes: fileSizeInMB, originTitle: this.downloadfilename }, '', { useGroupFile: true })
-                            : await uploadFile(this.e, { filepath: filePath, totalBytes: fileSizeInMB, originTitle: this.downloadfilename }, '')
-                    }
-                })
+                    });
+                } else {
+                    if (bmp4?.filepath) await Common.removeFile(bmp4.filepath, true);
+                    if (bmp3?.filepath) await Common.removeFile(bmp3.filepath, true);
+                }
+                break;
             }
-        } else {
-            /** 没登录（没配置ck）情况下直接发直链，传直链在DownLoadVideo()处理 */
-            const hasValidUrl = playUrlData?.data?.durl?.length > 0
-            if (hasValidUrl) {
-                await downloadVideo(this.e, { video_url: playUrlData?.data.durl[0].url, title: { timestampTitle: `tmp_${Date.now()}.mp4`, originTitle: `${this.downloadfilename}.mp4` } })
-            } else {
-                logger.error("无法下载视频,请配置CooKie后重试")
+            case false: {
+                // 未登录情况下的 HTML5 DURL 直链
+                const durlUrl = replaceHost(isOneVideo ? playUrlData?.durl?.[0]?.url : playUrlData?.result?.durl?.[0]?.url);
+                if (!durlUrl) {
+                    await this.e.reply("⚠️ 未获取到有效的视频直链 (可能为大会员专属或地区限制)");
+                    return;
+                }
+                await downloadVideo(this.e, { video_url: durlUrl, title: { timestampTitle: `tmp_${Date.now()}.mp4`, originTitle: `${this.downloadfilename}.mp4` } });
+                break;
             }
         }
     }
@@ -1163,6 +1132,12 @@ export const bilibiliProcessVideos = async (qualityOptions, videoList, audioUrl)
  * @returns  返回视频和音频总大小(MB),保留2位小数
  */
 export const getvideosize = async (videourl, audiourl, bvid) => {
+    if (!videourl || !audiourl || !videourl.startsWith('http') || !audiourl.startsWith('http')) return "0.00"; 
+    
+    // 🚨 强行替换官方稳定 CDN，防探测超时
+    videourl = videourl.replace(/^https?:\/\/[^\/]+/, 'https://upos-sz-mirrorhw.bilivideo.com');
+    audiourl = audiourl.replace(/^https?:\/\/[^\/]+/, 'https://upos-sz-mirrorhw.bilivideo.com');
+
     const videoheaders = await new Networks({
         url: videourl,
         headers: {
