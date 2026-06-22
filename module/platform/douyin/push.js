@@ -483,19 +483,13 @@ export class DouYinpush extends Base {
 
     /**
      * 设置或更新特定 sec_uid 的群组信息。
-     * @param {DySearchInfo} data 抖音的搜索结果数据。需要接口返回的原始数据
-     * @returns {Promise<void>} 操作成功或失败的消息字符串。
+     * @param {string} sec_uid 用户的sec_uid
      */
-    async setting(data) {
+    async setting(sec_uid) {
         const config = Config.pushlist // 读取配置文件
         const groupId = this.e.group_id
         const botId = this.e.self_id
-        // 使用数组find方法快速定位用户信息卡片，避免循环遍历导致的性能问题
-        const userCard = data.data?.find(item => item.card_unique_name === 'user')
-        if (!userCard) {
-            throw new Error('未找到用户信息')
-        }
-        const sec_uid = userCard.user_list?.[0]?.user_info?.sec_uid
+
         if (!sec_uid) {
             throw new Error('无法获取用户sec_uid')
         }
@@ -505,7 +499,7 @@ export class DouYinpush extends Base {
         const isSubscribed = await douyinDB?.isSubscribed(sec_uid, groupId)
 
         if (!UserInfoData?.data?.user) {
-            throw new Error('获取用户信息失败')
+            throw new Error('获取用户信息失败, 请确认抖音号或链接是否正确')
         }
 
         // 处理抖音号：优先使用unique_id，如果为空则使用short_id

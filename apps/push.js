@@ -79,25 +79,62 @@ export class kkkPush extends plugin {
   async setdyPush(e) {
     if (e.isPrivate) return true
     
-    // 实例化一个带 Cookie 和环境上下文的推送对象
     const dy = new DouYinpush(e)
-    
-    // 使用带 Cookie 的内置 amagi 实例去请求，防风控拦截
-    const data = await dy.amagi.douyin.fetcher.searchContent({ 
-      query: e.msg.replace(/^#设置抖音推送/, ''), 
-      type: "user", 
-      typeMode: 'strict' 
-    }).catch(err => {
-      logger.error('获取抖音用户数据失败:', err)
-      return null
-    })
+    let input = e.msg.replace(/^#设置抖音推送/, '').trim()
+    let sec_uid = ""
 
-    if (!data || !data.data) {
-      await e.reply('获取抖音用户数据失败，请检查 Cookie 配置或稍后再试', { reply: true })
+    // 1. 智能匹配：主页链接提取
+    const urlMatch = input.match(/user\/([A-Za-z0-9_-]+)/)
+    if (urlMatch) {
+      sec_uid = urlMatch[1]
+    } 
+    // 2. 智能匹配：纯长段 sec_uid 提取 (MS4w开头)
+    else if (input.startsWith('MS4w')) {
+      sec_uid = input
+    } 
+    // 3. 智能匹配：短号/昵称 走搜索接口
+    else {
+      const data = await dy.amagi.douyin.fetcher.searchContent({ 
+        query: input, 
+        type: "user", 
+        typeMode: 'strict' 
+      }).catch(err => {
+        logger.error('获取抖音用户数据失败:', err)
+        return null
+      })
+
+      if (!data || !data.data) {
+        await e.reply('搜索抖音用户失败，请检查 Cookie 配置或稍后再试', { reply: true })
+        return true
+      }
+
+      // 🚨 终极提取大法：无视结构变化，深度遍历查找返回体里的 sec_uid
+      const findSecUid = (obj) => {
+        if (!obj || typeof obj !== 'object') return null
+        if (obj.sec_uid && typeof obj.sec_uid === 'string' && obj.sec_uid.startsWith('MS4w')) return obj.sec_uid
+        for (let key in obj) {
+          if (typeof obj[key] === 'object') {
+            let res = findSecUid(obj[key])
+            if (res) return res
+          }
+        }
+        return null
+      }
+
+      sec_uid = findSecUid(data.data)
+    }
+
+    if (!sec_uid) {
+      await e.reply('未能解析到该用户的 sec_uid，请尝试直接发送带有 user/ 的主页链接', { reply: true })
       return true
     }
 
-    await dy.setting(data.data)
+    // 将提取出的 sec_uid 极简传入
+    try {
+      await dy.setting(sec_uid)
+    } catch (error) {
+      await e.reply(`设置失败: ${error.message || error}`)
+    }
     return true
   }
 

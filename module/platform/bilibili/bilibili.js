@@ -216,20 +216,50 @@ export class Bilibili extends Base {
                     this.downloadfilename = (title || "视频").substring(0, 50).replace(/[\\/:*?"<>|\r\n\s]/g, " ");
 
                     const replyContent = [];
-                    if ((Config.bilibili?.bilibiliTip || []).includes("简介") && (Config.bilibili?.displayContent || []).length > 0) {
-                        const contentMap = {
-                            cover: await segment.image(pic),
-                            title: `\n📺 标题: ${title}\n`,
-                            author: `\n👤 作者: ${name}\n`,
-                            stats: this.formatVideoStats(view, danmaku, like, coin, share, favorite),
-                            desc: `\n\n📝 简介: ${desc}`
-                        };
-                        const fixedOrder = ["cover", "title", "author", "stats", "desc"];
-                        fixedOrder.forEach(item => {
-                            if ((Config.bilibili?.displayContent || []).includes(item) && contentMap[item]) replyContent.push(contentMap[item]);
+                    if ((Config.bilibili?.bilibiliTip || []).includes("简介")) {
+                        let coverUrl = pic || "";
+                        if (coverUrl.startsWith("//")) coverUrl = "https:" + coverUrl;
+
+                        // 1. 将秒数转为 分:秒 格式的视频时长
+                        const durationSec = infoData.data.data.duration || 0;
+                        const min = Math.floor(durationSec / 60);
+                        const sec = durationSec % 60;
+                        const duration_text = `${min}:${sec < 10 ? "0" : ""}${sec}`;
+
+                        // 2. 将时间戳转为 YYYY-MM-DD HH:mm 格式的发布时间
+                        const pubDate = new Date((infoData.data.data.ctime || Math.floor(Date.now() / 1000)) * 1000);
+                        const create_time = `${pubDate.getFullYear()}-${String(pubDate.getMonth() + 1).padStart(2, "0")}-${String(pubDate.getDate()).padStart(2, "0")} ${String(pubDate.getHours()).padStart(2, "0")}:${String(pubDate.getMinutes()).padStart(2, "0")}`;
+
+                        const img = await Render("bilibili/dynamic/DYNAMIC_TYPE_AV", {
+                            image_url: [{ image_src: coverUrl }],
+                            text: title || "获取标题失败",
+                            desc: desc ? desc.replace(/\n/g, "<br>") : "暂无简介",
+                            // 3. 套用 Common.count 将大数字转换为 x.x万 格式
+                            dianzan: Common.count(like || 0),
+                            danmaku: Common.count(danmaku || 0),
+                            favorite: Common.count(favorite || 0),
+                            pinglun: Common.count(stat?.reply || 0),
+                            share: Common.count(share || 0),
+                            view: Common.count(view || 0),
+                            coin: Common.count(coin || 0),
+                            duration_text: duration_text,
+                            create_time: create_time,
+                            avatar_url: owner?.face || "",
+                            username: name || "未知UP主",
+                            user_shortid: owner?.mid || "未知",
+                            total_favorited: Common.count(favorite || 0),
+                            following_count: "-",
+                            fans: "-",
+                            frame: "",
+                            dynamicTYPE: "单视频解析",
+                            share_url: "https://b23.tv/" + infoData.data.data.bvid,
+                            render_time: Common.getCurrentTime()
                         });
-                        if (replyContent.length > 0) {
-                            await this.e.reply(this.mkMsg(replyContent, [{ text: "视频链接", link: "https://b23.tv/" + infoData.data.data.bvid }]));
+
+                        if (img) {
+                            await this.e.reply(this.mkMsg(img, [{ text: "视频直达链接", link: "https://b23.tv/" + infoData.data.data.bvid }]));
+                        } else {
+                            await this.e.reply("渲染视频卡片失败，正尝试直接获取视频流...");
                         }
                     }
 
@@ -245,7 +275,7 @@ export class Bilibili extends Base {
                             bvid: infoData.data.data.bvid,
                             qn: Config.bilibili.videoQuality
                         }, simplify, playUrlData.data.data.dash.audio?.[0]?.base_url || "");
-                        
+
                         playUrlData.data.data.dash.video = correctList.videoList;
                         playUrlData.data.data.accept_description = correctList.accept_description;
                         videoSize = await getvideosize(correctList.videoList[0]?.base_url || "", playUrlData.data.data.dash.audio?.[0]?.base_url || "", infoData.data.data.bvid);
@@ -255,8 +285,18 @@ export class Bilibili extends Base {
 
                     // 评论图渲染
                     if ((Config.bilibili?.bilibiliTip || []).includes("评论图")) {
-                        const commentsData = await this.fetchBili("评论数据", { number: Config.bilibili.bilibilinumcomments, type: 1, oid: infoData.data.data.aid.toString() });
-                        const commentsdata = Config.bilibili.bilibilinumcomments && Config.bilibili?.bilibilinumcomments > 0 && bilibiliComments(commentsData.data);
+                        // 🚨 修复 fetchBili 映射失效：直接调用 amagi 最新的 fetchComments 接口
+                        const commentsData = await this.amagi.bilibili.fetcher.fetchComments({
+                            number: Config.bilibili.bilibilinumcomments,
+                            type: 1,
+                            oid: infoData.data.data.aid.toString(),
+                            typeMode: "strict"
+                        });
+
+                        let rawComments = Config.bilibili.bilibilinumcomments && Config.bilibili?.bilibilinumcomments > 0 ? bilibiliComments(commentsData.data) : null;
+                        // 兼容新老 bilibiliComments 的不同返回结构
+                        const commentsdata = Array.isArray(rawComments) ? rawComments : (rawComments?.comments || []);
+
                         if (commentsdata?.length) {
                             img = await Render("bilibili/comment", {
                                 Type: "视频",
@@ -276,7 +316,7 @@ export class Bilibili extends Base {
                         await this.e.reply(`设定的最大上传大小为 ${Config.upload.filelimit}MB\n当前解析到的视频大小为 ${Number(videoSize)}MB\n视频太大了，还是去B站看吧~`, { reply: true });
                     } else {
                         if (Config.bilibili.videoQuality !== 0 && Config.bilibili.videoQuality < 64) {
-                            this.islogin = false; 
+                            this.islogin = false;
                         }
                         const finalPlayUrlData = (Config.bilibili.videoQuality !== 0 && Config.bilibili.videoQuality < 64) || !this.islogin ? nockData?.data : playUrlData?.data;
                         await this.getvideo({ infoData: infoData.data, playUrlData: finalPlayUrlData });
@@ -555,15 +595,32 @@ export class Bilibili extends Base {
                             if (orig.type === 'DYNAMIC_TYPE_DRAW') {
                                 const pics = orig.modules.module_dynamic?.major?.opus?.pics || [];
                                 data.image_url = pics.filter(item => item?.url).map(item => ({ image_src: item.url }));
-                            } else if (orig.type === 'DYNAMIC_TYPE_AV') {
-                                const archive = orig.modules.module_dynamic?.major?.archive;
-                                if (archive) {
-                                    data.image_url = [{ image_src: archive.cover }];
-                                    data.title = archive.title;
-                                    data.play = Common.count(archive.stat?.view || 0);
-                                    data.danmaku = Common.count(archive.stat?.danmaku || 0);
-                                    data.duration_text = archive.duration_text;
+                            } else if (orig.type === "DYNAMIC_TYPE_AV") {
+                                const debugMajor = orig.modules?.module_dynamic?.major || {};
+                                const archive = debugMajor.archive || {};
+
+                                let coverUrl = archive.cover || archive.pic || "";
+
+                                // ================= 调试断点开始 =================
+                                if (!coverUrl) {
+                                    logger.mark("[Bilibili 解析断点] ⚠️ 抓到了！这个转发的 AV 视频没有常规的 cover/pic 字段，打印底层结构寻找伪装者：");
+                                    logger.mark(JSON.stringify(debugMajor, null, 2));
                                 }
+                                // ================= 调试断点结束 =================
+
+                                if (coverUrl && coverUrl.startsWith("//")) coverUrl = "https:" + coverUrl;
+
+                                data.cover = coverUrl;
+                                data.title = archive.title || "获取标题失败";
+                                data.play = Common.count(archive.stat?.play || archive.stat?.view || 0);
+                                data.danmaku = Common.count(archive.stat?.danmaku || 0);
+                                data.duration_text = archive.duration_text || "00:00";
+                            } else if (["DYNAMIC_TYPE_PGC", "DYNAMIC_TYPE_UGC_SEASON"].includes(orig.type)) {
+                                // ================= 调试断点开始 =================
+                                // 顺手抓一下番剧(PGC)或合集(SEASON)，它们也是视频，但结构不一样，极易漏解析导致没封面！
+                                logger.mark(`[Bilibili 解析断点] ⚠️ 抓到了特殊视频类型: ${orig.type}，打印结构：`);
+                                logger.mark(JSON.stringify(orig.modules?.module_dynamic?.major, null, 2));
+                                // ================= 调试断点结束 =================
                             } else if (orig.type === 'DYNAMIC_TYPE_LIVE_RCMD') {
                                 const liveData = orig.modules.module_dynamic?.major?.live_rcmd?.content ? JSON.parse(orig.modules.module_dynamic.major.live_rcmd.content) : null;
                                 if (liveData?.live_play_info) {
@@ -645,7 +702,7 @@ export class Bilibili extends Base {
 
         const isOneVideo = this.Type === "one_video";
         const videoId = isOneVideo ? infoData?.data?.bvid : infoData?.result?.season_id;
-        
+
         // 🚨 终极核武器：强制替换所有 P2P 域名为官方华为云 CDN，根治海外服务器 3000ms 丢包断流！
         const replaceHost = (url) => url ? url.replace(/^https?:\/\/[^\/]+/, 'https://upos-sz-mirrorhw.bilivideo.com') : url;
 
@@ -1132,8 +1189,8 @@ export const bilibiliProcessVideos = async (qualityOptions, videoList, audioUrl)
  * @returns  返回视频和音频总大小(MB),保留2位小数
  */
 export const getvideosize = async (videourl, audiourl, bvid) => {
-    if (!videourl || !audiourl || !videourl.startsWith('http') || !audiourl.startsWith('http')) return "0.00"; 
-    
+    if (!videourl || !audiourl || !videourl.startsWith('http') || !audiourl.startsWith('http')) return "0.00";
+
     // 🚨 强行替换官方稳定 CDN，防探测超时
     videourl = videourl.replace(/^https?:\/\/[^\/]+/, 'https://upos-sz-mirrorhw.bilivideo.com');
     audiourl = audiourl.replace(/^https?:\/\/[^\/]+/, 'https://upos-sz-mirrorhw.bilivideo.com');
