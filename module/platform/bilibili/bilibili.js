@@ -180,15 +180,53 @@ export class Bilibili extends Base {
             !iddata?.Episode && (Config.bilibili?.bilibiliTip || []).includes('提示信息') && await this.e.reply('检测到B站链接，开始解析')
             switch (this.Type) {
                 case "one_video": {
-                    // 1. 获取视频基本信息
-                    const infoData = await this.fetchBili("单个视频作品数据", { bvid: String(iddata.bvid) });
-                    if (!infoData?.data?.data) return false;
+                    // 1. 获取视频基本信息 (使用自带 WBI 签名的 amagi 接口，防普通视频假 404)
+                    const infoData = await this.amagi.bilibili.fetcher.fetchVideoInfo({
+                        bvid: String(iddata.bvid),
+                        typeMode: "strict"
+                    }).catch((err) => {
+                        logger.error("获取视频基本信息异常:", err);
+                        return null;
+                    });
 
-                    const targetCid = iddata.p ? (infoData.data.data.pages[iddata.p - 1]?.cid || infoData.data.data.cid) : infoData.data.data.cid;
+                    const resData = infoData?.data;
+                    if (!resData) return false;
 
-                    // 2. 获取带音视频分离的 DASH 高清流 (🚨 注入 qn:120, fnval:4048 强行禁用 MCDN 节点)
+                    // 🚨 修正版精确诊断：B站针对海外IP请求地区限定番剧，会极其粗暴地返回 -404
+                    if (resData.code !== 0) {
+                        let reason = resData.message || "未知拦截";
+                        if (resData.code === -404) reason = "👻 当前服务器ip受【地区版权限制】或视频已失效";
+                        else if (resData.code === -10403) reason = "🚷 当前服务器ip受【地区版权限制】";
+                        else if (resData.code === 62002) reason = "🙈 稿件不可见 (可能在审核中或被UP主隐藏)";
+                        else if (resData.code === -400) reason = "⚠️ 视频链接或请求参数错误";
+
+                        await this.e.reply(`解析拦截：${reason}\n(状态码: ${resData.code})`);
+                        return true;
+                    }
+
+                    // API 状态正常，校验底层视频数据结构
+                    if (!infoData.data.data) return false;
+
+                    // 🚨 精确诊断 2：拦截跳转到番剧/电影频道的 PGC 专属页 (明确为大会员或特殊版权)
+                    if (infoData.data.data.redirect_url) {
+                        await this.e.reply(`解析拦截：该视频属于番剧/影视生态。\n此类内容通常需要【大会员专属】或具有【地区版权限制】，暂不支持直链解析。\n🔗 直达链接：${infoData.data.data.redirect_url}`);
+                        return true;
+                    }
+
+                    // 🚨 终极护盾 3：拦截深度残缺数据，彻底根除 reading '0'
+                    if (!infoData.data.data.pages || infoData.data.data.pages.length === 0) {
+                        await this.e.reply("解析拦截：未能获取到视频分页数据(pages)，视频格式不支持。");
+                        return true;
+                    }
+
+                    // 强效提取：补上了安全链式调用 pages?.[pIndex]，万无一失
+                    const extractedAvid = Number(infoData.data.data.aid || infoData.data.data.avid || infoData.data.data.stat?.aid);
+                    const pIndex = iddata.p ? Math.max(0, Number(iddata.p) - 1) : 0;
+                    const targetCid = Number(infoData.data.data.pages?.[pIndex]?.cid || infoData.data.data.cid);
+
+                    // 2. 获取带音视频分离的 DASH 高清流 (注入 qn:120, fnval:4048 强行禁用 MCDN 节点)
                     let playUrlData = await this.amagi.bilibili.fetcher.fetchVideoStreamUrl({
-                        avid: infoData.data.data.aid,
+                        avid: extractedAvid,
                         cid: targetCid,
                         qn: 120,
                         fnval: 4048,
@@ -196,14 +234,15 @@ export class Bilibili extends Base {
                         typeMode: "strict"
                     }).catch(() => null);
 
-                    // 3. 获取单文件直链的 DURL 兜底流
-                    const { bilibiliApiUrls } = await import("@ikenxuan/amagi");
+                    // 3. 获取单文件直链的 DURL 兜底流 (带 WBI 签名，防获取流时被拦截)
                     let nockData = null;
                     try {
-                        nockData = await new Networks({
-                            url: bilibiliApiUrls.getVideoStream({ avid: infoData.data.data.aid, cid: targetCid }) + "&platform=html5",
-                            headers: this.headers
-                        }).getData();
+                        nockData = await this.amagi.bilibili.fetcher.fetchVideoStreamUrl({
+                            avid: extractedAvid,
+                            cid: targetCid,
+                            platform: "html5",
+                            typeMode: "strict"
+                        });
                     } catch (e) {
                         logger.error("获取兜底视频流失败", e);
                     }
