@@ -192,7 +192,7 @@ export class Bilibili extends Base {
                     const resData = infoData?.data;
                     if (!resData) return false;
 
-                    // 🚨 修正版精确诊断：B站针对海外IP请求地区限定番剧，会极其粗暴地返回 -404
+                    // 🚨 修正版精确诊断
                     if (resData.code !== 0) {
                         let reason = resData.message || "未知拦截";
                         if (resData.code === -404) reason = "👻 当前服务器ip受【地区版权限制】或视频已失效";

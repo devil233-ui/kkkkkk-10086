@@ -267,7 +267,27 @@ export class Bilibilipush extends Base {
                             }
                             /** 处理转发动态 */
                             case DynamicType.FORWARD: {
-                                const text = replacetext(br(dynamicItem.Dynamic_Data.modules.module_dynamic.desc?.text || ''), dynamicItem.Dynamic_Data.modules.module_dynamic.desc?.rich_text_nodes || [])
+                                // 🚨 核心修复：B站 V6 接口会在转发动态的 desc.text 尾部强行拼接原动态的全文！
+                                // 我们通过顺序匹配 rich_text_nodes 算出 UP 主真正输入的文本长度，切掉后面的复读废话。
+                                let descText = dynamicItem.Dynamic_Data.modules.module_dynamic.desc?.text || "";
+                                const richNodes = dynamicItem.Dynamic_Data.modules.module_dynamic.desc?.rich_text_nodes || [];
+                                
+                                if (descText && richNodes.length > 0) {
+                                    let currentPos = 0;
+                                    for (const node of richNodes) {
+                                        const matchText = node.orig_text || node.text || "";
+                                        if (!matchText) continue;
+                                        const matchPos = descText.indexOf(matchText, currentPos);
+                                        if (matchPos !== -1) {
+                                            currentPos = matchPos + matchText.length;
+                                        }
+                                    }
+                                    if (currentPos > 0) {
+                                        descText = descText.substring(0, currentPos);
+                                    }
+                                }
+                                
+                                const text = replacetext(br(descText), richNodes);
                                 let param = {}
                                 switch (dynamicItem.Dynamic_Data.orig.type) {
                                     case DynamicType.AV: {

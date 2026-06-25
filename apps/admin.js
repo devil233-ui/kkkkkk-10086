@@ -127,7 +127,7 @@ export class kkkAdmin extends plugin {
     super({
       name: 'kkkkkk-10086-设置',
       event: 'message',
-      priority: 100,
+      priority: -114514,
       rule: [
         {
           reg: SwitchCfgReg,
@@ -175,12 +175,12 @@ export class kkkAdmin extends plugin {
           permission: 'master'
         },
         {
-          reg: /^#?kkk清空b站动态缓存$/,
+          reg: /^#?(kkk)?\s*清空[Bb]站缓存$/i,
           fnc: 'clearBilibiliCache',
           permission: 'master'
         },
         {
-          reg: /^#?kkk清空抖音动态缓存$/,
+          reg: /^#?(kkk)?\s*清空抖音缓存$/i,
           fnc: 'clearDouyinCache',
           permission: 'master'
         }
