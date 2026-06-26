@@ -135,7 +135,8 @@ export class Bilibili extends Base {
                     // 视频流数据等接口可能需要 cid，脱水成纯数字
                     if (p.cid !== undefined) p.cid = Number(Array.isArray(p.cid) ? p.cid[0] : p.cid);
 
-                    p.typeMode = 'strict';
+                    p.typeMode = "strict";
+                    p.cookie = Config.cookies.bilibili; // 🚨 核心修复 1：把 cookie 强制注入给所有底层接口，拒绝裸奔！
 
                     const executeWithRethink = async () => {
                         try {
@@ -224,30 +225,44 @@ export class Bilibili extends Base {
                     const pIndex = iddata.p ? Math.max(0, Number(iddata.p) - 1) : 0;
                     const targetCid = Number(infoData.data.data.pages?.[pIndex]?.cid || infoData.data.data.cid);
 
-                    // 2. 获取带音视频分离的 DASH 高清流 (注入 qn:120, fnval:4048 强行禁用 MCDN 节点)
+                    // 2. 获取带音视频分离的 DASH 高清流
                     let playUrlData = await this.amagi.bilibili.fetcher.fetchVideoStreamUrl({
-                        avid: extractedAvid,
+                        avid: infoData.data.data.aid,
                         cid: targetCid,
                         qn: 120,
                         fnval: 4048,
                         fourk: 1,
-                        typeMode: "strict"
+                        typeMode: "strict",
+                        cookie: Config.cookies.bilibili || "" // 🚨 对齐 karin：强制注入 CK，拿到 1080P 完整流表
                     }).catch(() => null);
 
-                    // 3. 获取单文件直链的 DURL 兜底流 (带 WBI 签名，防获取流时被拦截)
+                    // 3. 获取单文件直链的 DURL 兜底流
+                    const { bilibiliApiUrls } = await import("@ikenxuan/amagi");
                     let nockData = null;
                     try {
-                        nockData = await this.amagi.bilibili.fetcher.fetchVideoStreamUrl({
-                            avid: extractedAvid,
-                            cid: targetCid,
-                            platform: "html5",
-                            typeMode: "strict"
-                        });
+                        nockData = await new Networks({
+                            url: bilibiliApiUrls.getVideoStream({ avid: infoData.data.data.aid, cid: targetCid }) + "&platform=html5",
+                            headers: this.headers
+                        }).getData();
                     } catch (e) {
                         logger.error("获取兜底视频流失败", e);
                     }
 
-                    this.islogin = (await checkCk()).Status === "isLogin";
+                    // 直接原地带上 Cookie 查状态，彻底解决“虚假失效”
+                    const navRes = await this.amagi.bilibili.fetcher.fetchLoginStatus({ typeMode: "strict", cookie: Config.cookies.bilibili || "" }).catch(() => null);
+                    
+                    // 🚨 断点 1：检查查状态接口的返回
+                    logger.mark(`[B站解析断点] LoginStatus 返回状态: isLogin=${navRes?.data?.data?.isLogin}, mid=${navRes?.data?.data?.mid}`);
+
+                    // 🚨 找回丢失的赋值语句！之前丢了这行，导致程序永远以为你是游客！
+                    this.islogin = navRes?.data?.data?.isLogin || navRes?.data?.data?.mid !== undefined;
+
+                    if (!this.islogin && Config.cookies?.bilibili) {
+                        logger.mark(`[B站解析断点] Cookie 失效或被风控，已降级游客模式！`);
+                        await this.e.reply("⚠️ 检测到 B站 Cookie 已失效！\n已自动切换至备用路线(游客模式)，画质最高 480P。");
+                    } else if (this.islogin) {
+                        logger.mark(`[B站解析断点] Cookie 校验成功！身份有效。`);
+                    }
                     const { owner, pic, title, stat, desc } = infoData.data.data;
                     const { name } = owner || { name: "未知" };
                     const { coin, like, share, view, favorite, danmaku } = stat || { coin: 0, like: 0, share: 0, view: 0, favorite: 0, danmaku: 0 };
@@ -357,7 +372,19 @@ export class Bilibili extends Base {
                         if (Config.bilibili.videoQuality !== 0 && Config.bilibili.videoQuality < 64) {
                             this.islogin = false;
                         }
-                        const finalPlayUrlData = (Config.bilibili.videoQuality !== 0 && Config.bilibili.videoQuality < 64) || !this.islogin ? nockData?.data : playUrlData?.data;
+
+                        // 🚨 断点 2：检查提取到的流表结构
+                        logger.mark(`[B站解析断点] 准备进入 getvideo，当前 islogin: ${this.islogin}`);
+                        logger.mark(`[B站解析断点] playUrlData.data.data.dash 是否存在: ${!!playUrlData?.data?.data?.dash?.video}`);
+
+                        // 🚨 核心修复：剥离多余的 .data 嵌套！原先 playUrlData?.data 只到外层，导致 dash 永远是 undefined，惨遭降级！
+                        let finalPlayUrlData = playUrlData?.data?.data;
+                        if (!finalPlayUrlData?.dash?.video || (Config.bilibili.videoQuality !== 0 && Config.bilibili.videoQuality < 64)) {
+                            logger.mark(`[B站解析断点] 未找到 DASH 流或要求低画质，触发 durl 兜底`);
+                            finalPlayUrlData = nockData?.data || playUrlData?.data?.data;
+                        } else {
+                            logger.mark(`[B站解析断点] 成功锁定 DASH 高清流，准备下载！`);
+                        }
                         await this.getvideo({ infoData: infoData.data, playUrlData: finalPlayUrlData });
                     }
                     break;
@@ -745,62 +772,72 @@ export class Bilibili extends Base {
         // 🚨 终极核武器：强制替换所有 P2P 域名为官方华为云 CDN，根治海外服务器 3000ms 丢包断流！
         const replaceHost = (url) => url ? url.replace(/^https?:\/\/[^\/]+/, 'https://upos-sz-mirrorhw.bilivideo.com') : url;
 
-        switch (this.islogin) {
-            case true: {
-                // DASH 高清流 (音视频分离)
-                const videoUrl = replaceHost(isOneVideo ? playUrlData?.data?.dash?.video?.[0]?.base_url : playUrlData?.result?.dash?.video?.[0]?.base_url);
-                const audioUrl = replaceHost(isOneVideo ? playUrlData?.data?.dash?.audio?.[0]?.base_url : playUrlData?.result?.dash?.audio?.[0]?.base_url);
+        // 🚨 核心修复 3：不再用 islogin 决定下载方式，而是根据实际获取到的流结构智能判断（DASH 优先，DURL 兜底）
+        const isDash = isOneVideo ? !!playUrlData?.dash?.video : !!playUrlData?.result?.dash?.video;
 
-                if (!videoUrl || !audioUrl) {
-                    await this.e.reply("⚠️ 未获取到有效的音视频流 (可能为大会员专属或地区限制)");
-                    return;
-                }
+        if (isDash) {
+            // DASH 高清流 (音视频分离) - 游客模式现在也能无缝使用 DASH 480P！
+            const videoUrl = replaceHost(isOneVideo ? playUrlData?.dash?.video?.[0]?.base_url : playUrlData?.result?.dash?.video?.[0]?.base_url);
+            const audioUrl = replaceHost(isOneVideo ? playUrlData?.dash?.audio?.[0]?.base_url : playUrlData?.result?.dash?.audio?.[0]?.base_url);
 
-                // 加入 baseHeaders 伪装标准 User-Agent 防止被直接拉黑
-                const downloadHeaders = { ...baseHeaders, Referer: "https://www.bilibili.com", Cookie: "" };
-                const [bmp4, bmp3] = await Promise.all([
-                    downloadFile(videoUrl, { title: `Bil_V_${videoId}.mp4`, headers: downloadHeaders }),
-                    downloadFile(audioUrl, { title: `Bil_A_${videoId}.mp3`, headers: downloadHeaders })
-                ]);
+            if (!videoUrl || !audioUrl) {
+                await this.e.reply("⚠️ 未获取到有效的音视频流 (可能为大会员专属或地区限制)");
+                return;
+            }
 
-                if (bmp4?.filepath && bmp3?.filepath) {
-                    await mergeFile("二合一（视频 + 音频）", {
-                        path: bmp4.filepath,
-                        path2: bmp3.filepath,
-                        resultPath: Common.tempDri.video + `Bil_Result_${videoId}.mp4`,
-                        callback: async (success, resultPath) => {
-                            if (!success) {
-                                await Common.removeFile(bmp4.filepath, true);
-                                await Common.removeFile(bmp3.filepath, true);
-                                return true;
-                            }
-                            const filePath = Common.tempDri.video + `${Config.app.removeCache ? "tmp_" + Date.now() : this.downloadfilename}.mp4`;
-                            fs.renameSync(resultPath, filePath);
+            // 🚨 核心修复 4：不仅不能用 Cookie: "" 抹杀身份，还要补齐强力 User-Agent 防止 CDN 拉黑！
+            const downloadHeaders = {
+                ...baseHeaders,
+                ...this.headers,
+                Referer: "https://www.bilibili.com",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            };
+            const [bmp4, bmp3] = await Promise.all([
+                downloadFile(videoUrl, { title: `Bil_V_${videoId}.mp4`, headers: downloadHeaders }),
+                downloadFile(audioUrl, { title: `Bil_A_${videoId}.mp3`, headers: downloadHeaders })
+            ]);
+
+            if (bmp4?.filepath && bmp3?.filepath) {
+                await mergeFile("二合一（视频 + 音频）", {
+                    path: bmp4.filepath,
+                    path2: bmp3.filepath,
+                    resultPath: Common.tempDri.video + `Bil_Result_${videoId}.mp4`,
+                    callback: async (success, resultPath) => {
+                        if (!success) {
                             await Common.removeFile(bmp4.filepath, true);
                             await Common.removeFile(bmp3.filepath, true);
-
-                            const fileSizeInMB = Number((fs.statSync(filePath).size / (1024 * 1024)).toFixed(2));
-                            return fileSizeInMB > (Config.upload?.filelimit || 100)
-                                ? await uploadFile(this.e, { filepath: filePath, totalBytes: fileSizeInMB, originTitle: this.downloadfilename }, "", { useGroupFile: true })
-                                : await uploadFile(this.e, { filepath: filePath, totalBytes: fileSizeInMB, originTitle: this.downloadfilename }, "");
+                            return true;
                         }
-                    });
-                } else {
-                    if (bmp4?.filepath) await Common.removeFile(bmp4.filepath, true);
-                    if (bmp3?.filepath) await Common.removeFile(bmp3.filepath, true);
-                }
-                break;
+                        const filePath = Common.tempDri.video + `${Config.app.removeCache ? "tmp_" + Date.now() : this.downloadfilename}.mp4`;
+                        fs.renameSync(resultPath, filePath);
+                        await Common.removeFile(bmp4.filepath, true);
+                        await Common.removeFile(bmp3.filepath, true);
+
+                        const fileSizeInMB = Number((fs.statSync(filePath).size / (1024 * 1024)).toFixed(2));
+                        return fileSizeInMB > (Config.upload?.filelimit || 100)
+                            ? await uploadFile(this.e, { filepath: filePath, totalBytes: fileSizeInMB, originTitle: this.downloadfilename }, "", { useGroupFile: true })
+                            : await uploadFile(this.e, { filepath: filePath, totalBytes: fileSizeInMB, originTitle: this.downloadfilename }, "");
+                    }
+                });
+            } else {
+                if (bmp4?.filepath) await Common.removeFile(bmp4.filepath, true);
+                if (bmp3?.filepath) await Common.removeFile(bmp3.filepath, true);
             }
-            case false: {
-                // 未登录情况下的 HTML5 DURL 直链
-                const durlUrl = replaceHost(isOneVideo ? playUrlData?.durl?.[0]?.url : playUrlData?.result?.durl?.[0]?.url);
-                if (!durlUrl) {
-                    await this.e.reply("⚠️ 未获取到有效的视频直链 (可能为大会员专属或地区限制)");
-                    return;
-                }
-                await downloadVideo(this.e, { video_url: durlUrl, title: { timestampTitle: `tmp_${Date.now()}.mp4`, originTitle: `${this.downloadfilename}.mp4` } });
-                break;
+        } else {
+            // DURL 兜底直链 (当 DASH 彻底获取不到时)
+            const durlUrl = replaceHost(isOneVideo ? playUrlData?.durl?.[0]?.url : playUrlData?.result?.durl?.[0]?.url);
+            if (!durlUrl) {
+                await this.e.reply("⚠️ 未获取到有效的视频直链 (B站已切断此视频的游客直链，请检查Cookie配置)");
+                return;
             }
+            // 🚨 核心修复 5：给游客兜底流同样加上完整的请求头伪装
+            const fallbackHeaders = {
+                ...baseHeaders,
+                ...this.headers,
+                Referer: "https://www.bilibili.com",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            };
+            await downloadVideo(this.e, { video_url: durlUrl, title: { timestampTitle: `tmp_${Date.now()}.mp4`, originTitle: `${this.downloadfilename}.mp4` }, headers: fallbackHeaders });
         }
     }
 
@@ -1067,196 +1104,133 @@ const oid = (dynamicINFO, dynamicInfoCard) => {
  * @property {Object[]} returns.videoList - 处理后的视频流信息对象列表
  * @property {string} returns.selectedQuality - 选中的视频画质值
  */
+/**
+ * 检出符合大小的视频流信息对象 (🚨 完美移植自 karin-kkk)
+ * @param qualityOptions 清晰度及限制配置
+ * @param videoList 包含所有清晰度的视频流信息对象
+ * @param audioUrl 音频流地址
+ */
 export const bilibiliProcessVideos = async (qualityOptions, videoList, audioUrl) => {
-    // 如果不是自动选择模式，直接根据配置的清晰度选择视频
-    if (qualityOptions.qn !== 0 && Config.bilibili.videoQuality !== 0) {
+    // 🚨 修复 && 为 || (完美对齐 karin)，一旦指定画质直接跳过大小探测
+    if (qualityOptions.qn !== 0 || Config.bilibili.videoQuality !== 0) {
         /** @type {number} */
         const targetQuality = qualityOptions.qn || Config.bilibili.videoQuality || 80
 
         // 尝试找到完全匹配的清晰度
-        let matchedVideo = videoList.find(video => video?.id === targetQuality)
+        let matchedVideo = videoList.find((video) => video.id === targetQuality);
 
         // 如果没有完全匹配的清晰度，找最接近的
         if (!matchedVideo) {
-            // 按照清晰度ID排序
-            const sortedVideos = [...videoList].sort((a, b) => a.id - b.id)
-
-            // 找到小于目标清晰度的最大值
-            const lowerVideos = sortedVideos.filter(video => video.id < targetQuality)
-            const higherVideos = sortedVideos.filter(video => video.id > targetQuality)
+            const sortedVideos = [...videoList].sort((a, b) => a.id - b.id);
+            const lowerVideos = sortedVideos.filter((video) => video.id < targetQuality);
+            const higherVideos = sortedVideos.filter((video) => video.id > targetQuality);
 
             if (lowerVideos.length > 0) {
-                // 有小于目标清晰度的，取最大的
-                matchedVideo = lowerVideos[lowerVideos.length - 1]
+                matchedVideo = lowerVideos[lowerVideos.length - 1];
             } else if (higherVideos.length > 0) {
-                // 没有小于目标清晰度的，取最小的
-                matchedVideo = higherVideos[0]
+                matchedVideo = higherVideos[0];
             } else {
-                // 如果都没有，取第一个（应该不会发生）
-                matchedVideo = sortedVideos[0]
+                matchedVideo = sortedVideos[0];
             }
         }
 
-        // 更新视频列表和清晰度描述
-        /** @type {string} */
-        const matchedQuality = (matchedVideo?.id && qnd[matchedVideo?.id]) || qualityOptions.accept_description[0] || '未知'
-        qualityOptions.accept_description = [matchedQuality]
-        videoList = matchedVideo ? [matchedVideo] : []
+        const matchedQuality = qnd[matchedVideo.id] || qualityOptions.accept_description[0];
+        qualityOptions.accept_description = [matchedQuality];
+        videoList = [matchedVideo];
 
         return {
             accept_description: qualityOptions.accept_description,
-            videoList,
-            selectedQuality: matchedQuality
-        }
+            videoList
+        };
     }
 
-    // 自动选择逻辑（videoQuality === 0）
-    /** @type {Record<number, string>} */
-    const results = {}
-    logger.info('开始获取视频大小...')
-
+    // 自动选择逻辑 (videoQuality === 0)
+    const results = {};
     for (const video of videoList) {
-        try {
-            const size = await getvideosize(video.base_url, audioUrl, qualityOptions.bvid)
-            results[video.id] = size
-            logger.info(`视频ID ${video.id} (${qnd[video.id]}) 大小: ${size}`)
-        } catch (error) {
-            logger.error(`获取视频ID ${video.id} 大小时出错:`, error)
-            // 设置一个默认的大值，确保它不会被选中
-            results[video.id] = '999999MB'
-        }
+        const size = await getvideosize(video.base_url, audioUrl, qualityOptions.bvid);
+        results[video.id] = size;
     }
 
-    logger.info('所有视频大小结果:', results)
+    const sizes = Object.values(results).map((size) => parseFloat(size.replace('MB', '')));
+    let closestId = null;
+    let smallestDifference = Infinity;
+    const maxAutoVideoSize = qualityOptions.maxAutoVideoSize ?? Config.bilibili.maxAutoVideoSize;
 
-    // 将结果对象的值转换为数字，并找到最接近但不超过 qualityOptions.maxAutoVideoSize 或 Config.bilibili.maxAutoVideoSize 的值
-    const maxSize = qualityOptions?.maxAutoVideoSize || Config.bilibili.maxAutoVideoSize || 100
-    logger.info('最大允许大小:', maxSize, 'MB')
-
-    /** @type {number | null} */
-    let closestId = null
-    let smallestDifference = Infinity
-    /** @type {number | null} */
-    let largestUnderLimit = null // 新增：记录小于限制的最大视频ID
-
-    Object.entries(results).forEach(([id, sizeStr]) => {
-        /** @type {number} */
-        const idNum = Number(id)
-        /** @type {string} */
-        const sizeStrVal = sizeStr
-        /** @type {number} */
-        const size = parseFloat(sizeStrVal.replace('MB', ''))
-        logger.info(`检查视频ID ${idNum} (${qnd[idNum]}), 大小: ${size}MB`)
-
-        if (size <= maxSize) {
-            // 记录小于限制的最大视频ID
-            if (largestUnderLimit === null) {
-                // 第一次找到符合条件的视频，直接记录
-                largestUnderLimit = Number(idNum)
-            } else {
-                // 已经有记录，比较大小
-                /** @type {number} */
-                const currentSize = parseFloat(results[largestUnderLimit]?.replace('MB', '') || '0')
-                if (size > currentSize) {
-                    largestUnderLimit = Number(idNum)
-                }
-            }
-
-            // 计算与最大限制的差值
-            const difference = maxSize - size
+    sizes.forEach((size, index) => {
+        if (size <= maxAutoVideoSize) {
+            const difference = Math.abs(size - maxAutoVideoSize);
             if (difference < smallestDifference) {
-                smallestDifference = difference
-                closestId = Number(idNum)
+                smallestDifference = difference;
+                closestId = Object.keys(results)[index];
             }
         }
-    })
-
-
-    // 如果没有找到最接近的，但有小于限制的视频，选择最大的那个
-    if (closestId === null && largestUnderLimit !== null) {
-        closestId = largestUnderLimit
-    }
-
-    logger.info('选中的视频ID:', closestId)
-
-    /** @type {string} */
-    let selectedQuality = '' // 添加选中的画质值变量
+    });
 
     if (closestId !== null) {
-        // 找到最接近但不超过文件大小限制的视频清晰度
-        /** @type {string} */
-        const closestQuality = qnd[Number(closestId)] || '未知'
-        // 更新 OBJECT.DATA.data.accept_description
-        qualityOptions.accept_description = qualityOptions.accept_description.filter(desc => desc === closestQuality)
+        const closestQuality = qnd[Number(closestId)];
+        qualityOptions.accept_description = qualityOptions.accept_description.filter((desc) => desc === closestQuality);
         if (qualityOptions.accept_description.length === 0) {
-            qualityOptions.accept_description = [closestQuality]
+            qualityOptions.accept_description = [closestQuality];
         }
-        // 找到对应的视频对象
-        const video = videoList.find(video => video.id === Number(closestId))
-        if (video) {
-            // 更新 OBJECT.DATA.data.dash.video 数组
-            videoList = [video]
-        }
-        selectedQuality = closestQuality // 设置选中的画质值
+        const video = videoList.find((video) => video.id === Number(closestId));
+        videoList = [video];
     } else {
         // 如果没有找到符合条件的视频，使用最低画质的视频对象
-        const lastVideo = [...videoList].pop()
-        if (lastVideo) {
-            videoList = [lastVideo]
-        }
-        // 更新 OBJECT.DATA.data.accept_description 为最低画质的描述
-        const lastDescription = [...qualityOptions.accept_description].pop()
-        if (lastDescription) {
-            qualityOptions.accept_description = [lastDescription]
-            selectedQuality = lastDescription // 设置选中的画质值
-        }
+        videoList = [[...videoList].pop()];
+        qualityOptions.accept_description = [[...qualityOptions.accept_description].pop()];
     }
-
-    logger.warn('最终选中的画质:', selectedQuality)
     return {
         accept_description: qualityOptions.accept_description,
-        videoList,
-        selectedQuality  // 添加选中的画质值到返回对象
-    }
+        videoList
+    };
 }
 
 /**
- * [bilibili] 获取视频和音频的总大小
- * @param {string} videourl - 视频流URL
- * @param {string} audiourl - 音频流URL
- * @param {string} bvid - 视频BV号
- * @returns  返回视频和音频总大小(MB),保留2位小数
+ * 获取视频和音频的总大小 (🚨 完美移植自 karin-kkk)
  */
 export const getvideosize = async (videourl, audiourl, bvid) => {
-    if (!videourl || !audiourl || !videourl.startsWith('http') || !audiourl.startsWith('http')) return "0.00";
+    try {
+        if (!videourl || !audiourl || !videourl.startsWith('http') || !audiourl.startsWith('http')) return "0.00";
 
-    // 🚨 强行替换官方稳定 CDN，防探测超时
-    videourl = videourl.replace(/^https?:\/\/[^\/]+/, 'https://upos-sz-mirrorhw.bilivideo.com');
-    audiourl = audiourl.replace(/^https?:\/\/[^\/]+/, 'https://upos-sz-mirrorhw.bilivideo.com');
+        // 🚨 废除强制替换 CDN 导致签名失效 403 的操作，并修正 Referer (对齐 karin)
+        const videoheaders = await new Networks({
+            url: videourl,
+            headers: {
+                ...baseHeaders,
+                Referer: `https://www.bilibili.com/video/${bvid}`,
+                Cookie: Config.cookies.bilibili || ""
+            }
+        }).getHeaders()
+        const audioheaders = await new Networks({
+            url: audiourl,
+            headers: {
+                ...baseHeaders,
+                Referer: `https://www.bilibili.com/video/${bvid}`,
+                Cookie: Config.cookies.bilibili || ""
+            }
+        }).getHeaders()
 
-    const videoheaders = await new Networks({
-        url: videourl,
-        headers: {
-            ...baseHeaders,
-            Referer: `https://api.bilibili.com/video/${bvid}`,
-            Cookie: Config.cookies.bilibili
-        }
-    }).getHeaders()
-    const audioheaders = await new Networks({
-        url: audiourl,
-        headers: {
-            ...baseHeaders,
-            Referer: `https://api.bilibili.com/video/${bvid}`,
-            Cookie: Config.cookies.bilibili
-        }
-    }).getHeaders()
+        // 兼容字节提取，对齐 karin 底层
+        const extractBytes = (headers) => {
+            if (headers['content-range']) {
+                const match = headers['content-range'].match(/\/(\d+)/);
+                if (match) return parseInt(match[1], 10);
+            }
+            if (headers['content-length']) {
+                return parseInt(headers['content-length'], 10);
+            }
+            return 0;
+        };
 
-    const videoSize = videoheaders['content-range']?.match(/\/(\d+)/) ? parseInt(videoheaders['content-range']?.match(/\/(\d+)/)[1], 10) : 0
-    const audioSize = audioheaders['content-range']?.match(/\/(\d+)/) ? parseInt(audioheaders['content-range']?.match(/\/(\d+)/)[1], 10) : 0
+        const videoSize = extractBytes(videoheaders);
+        const audioSize = extractBytes(audioheaders);
 
-    const videoSizeInMB = (videoSize / (1024 * 1024)).toFixed(2)
-    const audioSizeInMB = (audioSize / (1024 * 1024)).toFixed(2)
+        const videoSizeInMB = (videoSize / (1024 * 1024)).toFixed(2);
+        const audioSizeInMB = (audioSize / (1024 * 1024)).toFixed(2);
 
-    const totalSizeInMB = parseFloat(videoSizeInMB) + parseFloat(audioSizeInMB)
-    return totalSizeInMB.toFixed(2)
+        return (parseFloat(videoSizeInMB) + parseFloat(audioSizeInMB)).toFixed(2);
+    } catch (error) {
+        logger.warn(`获取视频大小失败: ${error.message || String(error)}`);
+        return "0.00";
+    }
 }
