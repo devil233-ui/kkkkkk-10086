@@ -281,7 +281,7 @@ export class Bilibili extends Base {
                         const duration_text = `${min}:${sec < 10 ? "0" : ""}${sec}`;
 
                         // 2. 将时间戳转为 YYYY-MM-DD HH:mm 格式的发布时间
-                        const pubDate = new Date((infoData.data.data.ctime || Math.floor(Date.now() / 1000)) * 1000);
+                        const pubDate = new Date((infoData.data.data.pubdate || Math.floor(Date.now() / 1000)) * 1000);
                         const create_time = `${pubDate.getFullYear()}-${String(pubDate.getMonth() + 1).padStart(2, "0")}-${String(pubDate.getDate()).padStart(2, "0")} ${String(pubDate.getHours()).padStart(2, "0")}:${String(pubDate.getMinutes()).padStart(2, "0")}`;
 
                         const img = await Render("bilibili/dynamic/DYNAMIC_TYPE_AV", {
@@ -613,7 +613,7 @@ export class Bilibili extends Base {
                                 create_time: dynamicInfo.data.data.item.modules.module_author.pub_time, avatar_url: dynamicInfo.data.data.item.modules.module_author.face,
                                 frame: dynamicInfo.data.data.item.modules.module_author.pendant?.image || "", share_url: 'https://t.bilibili.com/' + dynamicInfo.data.data.item.id_str,
                                 username: checkvip(userProfileData.data.data.card), fans: Common.count(userProfileData.data.data.follower), user_shortid: dynamicInfo.data.data.item.modules.module_author.mid,
-                                total_favorited: Common.count(userProfileData.data.data.like_num), following_count: Common.count(userProfileData.data.data.card.attention), dynamicTYPE: '纯文动态'
+                                total_favorited: Common.count(userProfileData.data.data.like_num), following_count: Common.count(userProfileData.data.data.card.attention), render_time: Common.getCurrentTime(), dynamicTYPE: '纯文动态'
                             }));
                             break;
                         }
@@ -629,10 +629,10 @@ export class Bilibili extends Base {
                                     image_url: [{ image_src: INFODATA.data.data.pic }], text: br(INFODATA.data.data.title), desc: br(dynamicInfo.data.data.item.modules.module_dynamic.desc?.text || ""),
                                     dianzan: Common.count(INFODATA.data.data.stat.like), pinglun: Common.count(INFODATA.data.data.stat.reply), share: Common.count(INFODATA.data.data.stat.share),
                                     view: Common.count(dynamicInfo.data.data.item.modules.module_dynamic.major.archive.stat.view), coin: 0,
-                                    duration_text: dynamicInfo.data.data.item.modules.module_dynamic.major.archive.duration_text, create_time: Common.convertTimestampToDateTime(INFODATA.data.data.ctime),
+                                    duration_text: dynamicInfo.data.data.item.modules.module_dynamic.major.archive.duration_text, create_time: Common.convertTimestampToDateTime(INFODATA.data.data.pubdate),
                                     avatar_url: INFODATA.data.data.owner.face, frame: dynamicInfo.data.data.item.modules.module_author.pendant?.image || "", share_url: 'https://www.bilibili.com/video/' + bvid,
                                     username: checkvip(userProfileData.data.data.card), fans: Common.count(userProfileData.data.data.follower), user_shortid: userProfileData.data.data.card.mid,
-                                    total_favorited: Common.count(userProfileData.data.data.like_num), following_count: Common.count(userProfileData.data.data.card.attention), dynamicTYPE: '视频动态'
+                                    total_favorited: Common.count(userProfileData.data.data.like_num), following_count: Common.count(userProfileData.data.data.card.attention), render_time: Common.getCurrentTime(), dynamicTYPE: '视频动态'
                                 });
                                 await this.e.reply(img);
                             }

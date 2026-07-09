@@ -201,7 +201,7 @@ export class Bilibilipush extends Base {
                                         user_shortid: dynamicItem.host_mid,
                                         total_favorited: Common.count(userINFO.data.data.like_num),
                                         following_count: Common.count(userINFO.data.data.card.attention),
-                                        dynamicTYPE: '纯文动态推送'
+                                        render_time: Common.getCurrentTime(), dynamicTYPE: '纯文动态推送'
                                     }
                                 )
                                 break
@@ -230,7 +230,7 @@ export class Bilibilipush extends Base {
                                             view: Common.count(dynamicItem.Dynamic_Data.modules.module_dynamic.major?.archive?.stat?.view || 0),
                                             coin: 0,
                                             duration_text: dynamicItem.Dynamic_Data.modules.module_dynamic.major?.archive?.duration_text || '0:00',
-                                            create_time: Common.convertTimestampToDateTime(INFODATA.data.data.ctime),
+                                            create_time: Common.convertTimestampToDateTime(INFODATA.data.data.pubdate),
                                             avatar_url: INFODATA.data.data.owner.face,
                                             frame: dynamicItem.Dynamic_Data.modules.module_author.pendant.image,
                                             share_url: 'https://www.bilibili.com/video/' + bvid,
@@ -239,7 +239,7 @@ export class Bilibilipush extends Base {
                                             user_shortid: dynamicItem.host_mid,
                                             total_favorited: Common.count(userINFO.data.data.like_num),
                                             following_count: Common.count(userINFO.data.data.card.attention),
-                                            dynamicTYPE: '视频动态推送'
+                                            render_time: Common.getCurrentTime(), dynamicTYPE: '视频动态推送'
                                         }
                                     )
                                 }
