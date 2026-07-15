@@ -221,9 +221,9 @@ export class Bilibilipush extends Base {
                                     }
                                     img = await Render('bilibili/dynamic/DYNAMIC_TYPE_AV',
                                         {
-                                            image_url: [{ image_src: INFODATA.data.data.pic }],
-                                            text: br(INFODATA.data.data.title),
-                                            desc: br(dynamicItem.Dynamic_Data.modules.module_dynamic?.desc?.text || ""),
+                                            image_url: [{ image_src: INFODATA.data.data.pic }], text: br(INFODATA.data.data.title),
+                                            // 🚨 只保留视频本体简介
+                                            desc: br(INFODATA.data.data.desc || "暂无简介"),
                                             dianzan: Common.count(INFODATA.data.data.stat.like),
                                             pinglun: Common.count(INFODATA.data.data.stat.reply),
                                             share: Common.count(INFODATA.data.data.stat.share),
@@ -271,7 +271,7 @@ export class Bilibilipush extends Base {
                                 // 我们通过顺序匹配 rich_text_nodes 算出 UP 主真正输入的文本长度，切掉后面的复读废话。
                                 let descText = dynamicItem.Dynamic_Data.modules.module_dynamic.desc?.text || "";
                                 const richNodes = dynamicItem.Dynamic_Data.modules.module_dynamic.desc?.rich_text_nodes || [];
-                                
+
                                 if (descText && richNodes.length > 0) {
                                     let currentPos = 0;
                                     for (const node of richNodes) {
@@ -286,7 +286,7 @@ export class Bilibilipush extends Base {
                                         descText = descText.substring(0, currentPos);
                                     }
                                 }
-                                
+
                                 const text = replacetext(br(descText), richNodes);
                                 let param = {}
                                 switch (dynamicItem.Dynamic_Data.orig.type) {
@@ -432,22 +432,22 @@ export class Bilibilipush extends Base {
                                 let parseDraw = Array.isArray(parseConfig) ? parseConfig.includes('图文') : (parseConfig === true);
 
                                 if ((parseVideo || parseDraw) && status.message_id && status.message_id !== '1') {
-                                    
+
                                     // 1. 处理视频解析
                                     if (isVideo && parseVideo && bvidToParse) {
                                         try {
                                             logger.mark(`[Bilibili Push] 准备解析并推送视频: ${bvidToParse}`);
                                             const infoData = await this.amagi.bilibili.fetcher.fetchVideoInfo({ bvid: String(bvidToParse), typeMode: 'strict' }).catch(() => null);
-                                            
+
                                             if (infoData?.data?.data) {
                                                 const cid = infoData.data.data.cid;
                                                 const aid = infoData.data.data.aid;
                                                 const title = infoData.data.data.title.substring(0, 50).replace(/[\\/:*?"<>|\r\n\s]/g, ' ');
-                                                
+
                                                 // 获取极其轻量的 HTML5 DURL 直链，绕过 DASH 合成，专为 Push 打造的高速通道
                                                 const { bilibiliApiUrls } = await import("@ikenxuan/amagi");
                                                 const { Networks, downloadVideo } = await import('../../utils/index.js');
-                                                
+
                                                 const nockData = await new Networks({
                                                     url: bilibiliApiUrls.getVideoStream({ avid: aid, cid: cid }) + "&platform=html5",
                                                     headers: bilibiliBaseHeaders
@@ -458,7 +458,7 @@ export class Bilibilipush extends Base {
                                                     // 无脑套上顶级 CDN 防火墙，防超时防拦截
                                                     durlUrl = durlUrl.replace(/^https?:\/\/[^\/]+/, 'https://upos-sz-mirrorhw.bilivideo.com');
                                                     logger.mark(`[Bilibili Push] 正在后台下载并发送 B站视频: ${title}.mp4 ...`);
-                                                    
+
                                                     await downloadVideo(this.e, {
                                                         video_url: durlUrl,
                                                         title: { timestampTitle: `tmp_${Date.now()}.mp4`, originTitle: `${title}.mp4` },
@@ -472,8 +472,8 @@ export class Bilibilipush extends Base {
                                         } catch (error) {
                                             logger.error('[Bilibili Push] 视频流提取或发送失败:', error);
                                         }
-                                    } 
-                                    
+                                    }
+
                                     // 2. 处理图集/图文解析
                                     else if (isDraw && parseDraw && picsToParse && picsToParse.length > 0) {
                                         try {
@@ -897,63 +897,63 @@ const extractEmojisData = (data) => {
  * @returns {Promise<boolean>} 是否应该跳过推送
  */
 const skipDynamic = async (PushItem) => {
-  const tags = [];
-  let fullText = "";
+    const tags = [];
+    let fullText = "";
 
-  const dynamic = PushItem.Dynamic_Data.modules?.module_dynamic;
-  if (!dynamic) return false;
+    const dynamic = PushItem.Dynamic_Data.modules?.module_dynamic;
+    if (!dynamic) return false;
 
-  // 1. 提取当前动态的文本和标签（兼顾视频动态的 desc 和图文动态的 major.opus.summary）
-  if (dynamic.desc) {
-    fullText += dynamic.desc.text || "";
-    if (dynamic.desc.rich_text_nodes) {
-      for (const node of dynamic.desc.rich_text_nodes) {
-        if (node.type === "topic" && node.orig_text) tags.push(node.orig_text);
-      }
-    }
-  }
-  
-  if (dynamic.major?.opus?.summary) {
-    fullText += "\n" + (dynamic.major.opus.summary.text || "");
-    if (dynamic.major.opus.summary.rich_text_nodes) {
-      for (const node of dynamic.major.opus.summary.rich_text_nodes) {
-        if (node.type === "topic" && node.orig_text) tags.push(node.orig_text);
-      }
-    }
-  }
-
-  // 2. 提取转发的原动态文本和标签
-  if (PushItem.Dynamic_Data.orig) {
-    const origDynamic = PushItem.Dynamic_Data.orig.modules?.module_dynamic;
-    
-    if (origDynamic?.desc) {
-      fullText += "\n" + (origDynamic.desc.text || "");
-      if (origDynamic.desc.rich_text_nodes) {
-        for (const node of origDynamic.desc.rich_text_nodes) {
-          if (node.type === "topic" && node.orig_text) tags.push(node.orig_text);
+    // 1. 提取当前动态的文本和标签（兼顾视频动态的 desc 和图文动态的 major.opus.summary）
+    if (dynamic.desc) {
+        fullText += dynamic.desc.text || "";
+        if (dynamic.desc.rich_text_nodes) {
+            for (const node of dynamic.desc.rich_text_nodes) {
+                if (node.type === "topic" && node.orig_text) tags.push(node.orig_text);
+            }
         }
-      }
     }
-    
-    if (origDynamic?.major?.opus?.summary) {
-      fullText += "\n" + (origDynamic.major.opus.summary.text || "");
-      if (origDynamic.major.opus.summary.rich_text_nodes) {
-        for (const node of origDynamic.major.opus.summary.rich_text_nodes) {
-          if (node.type === "topic" && node.orig_text) tags.push(node.orig_text);
+
+    if (dynamic.major?.opus?.summary) {
+        fullText += "\n" + (dynamic.major.opus.summary.text || "");
+        if (dynamic.major.opus.summary.rich_text_nodes) {
+            for (const node of dynamic.major.opus.summary.rich_text_nodes) {
+                if (node.type === "topic" && node.orig_text) tags.push(node.orig_text);
+            }
         }
-      }
     }
-  }
 
-  // 3. 终极防漏：把收集到的所有文本强行覆盖回 desc.text
-  // 因为底层的 shouldFilter 过滤机制只读 desc.text，这样就能让它看见所有内容！
-  if (!dynamic.desc) {
-    dynamic.desc = { text: fullText, rich_text_nodes: [] };
-  } else {
-    dynamic.desc.text = fullText;
-  }
+    // 2. 提取转发的原动态文本和标签
+    if (PushItem.Dynamic_Data.orig) {
+        const origDynamic = PushItem.Dynamic_Data.orig.modules?.module_dynamic;
 
-  logger.debug(`检查动态是否需要过滤：https://t.bilibili.com/${PushItem.Dynamic_Data.id_str}`);
-  const shouldFilter = await bilibiliDB.shouldFilter(PushItem, tags);
-  return shouldFilter;
+        if (origDynamic?.desc) {
+            fullText += "\n" + (origDynamic.desc.text || "");
+            if (origDynamic.desc.rich_text_nodes) {
+                for (const node of origDynamic.desc.rich_text_nodes) {
+                    if (node.type === "topic" && node.orig_text) tags.push(node.orig_text);
+                }
+            }
+        }
+
+        if (origDynamic?.major?.opus?.summary) {
+            fullText += "\n" + (origDynamic.major.opus.summary.text || "");
+            if (origDynamic.major.opus.summary.rich_text_nodes) {
+                for (const node of origDynamic.major.opus.summary.rich_text_nodes) {
+                    if (node.type === "topic" && node.orig_text) tags.push(node.orig_text);
+                }
+            }
+        }
+    }
+
+    // 3. 终极防漏：把收集到的所有文本强行覆盖回 desc.text
+    // 因为底层的 shouldFilter 过滤机制只读 desc.text，这样就能让它看见所有内容！
+    if (!dynamic.desc) {
+        dynamic.desc = { text: fullText, rich_text_nodes: [] };
+    } else {
+        dynamic.desc.text = fullText;
+    }
+
+    logger.debug(`检查动态是否需要过滤：https://t.bilibili.com/${PushItem.Dynamic_Data.id_str}`);
+    const shouldFilter = await bilibiliDB.shouldFilter(PushItem, tags);
+    return shouldFilter;
 };

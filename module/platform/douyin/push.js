@@ -341,7 +341,7 @@ export class DouYinpush extends Base {
      * @returns {Promise<WillBePushList>} 将要推送的列表
      */
     async getDynamicList(userList) {
-        const willbepushlist = {} 
+        const willbepushlist = {}
 
         try {
             const filteredUserList = userList.filter(item => item.switch !== false)
@@ -350,7 +350,7 @@ export class DouYinpush extends Base {
                 try {
                     const sec_uid = item.sec_uid
                     logger.mark(`[Douyin Push] 开始获取抖音UP主：${item.remark || '未知'} 的最新作品...`)
-                    
+
                     // 🚨 修复 1：增加 count 参数，防止抖音返回空数组
                     const videolist = await this.amagi.douyin.fetcher.fetchUserVideoList({
                         sec_uid: sec_uid,
@@ -361,7 +361,42 @@ export class DouYinpush extends Base {
                         logger.error(`[Douyin Push] 获取视频列表失败:`, e);
                         return {};
                     })
-                    
+                    // 🚨 调试探针：直接把抖音底层接口吐出来的完整 JSON 砸在日志里！
+                    logger.debug(`[Douyin 调试] UP主 ${item.remark} 的原始列表数据: \n`);
+
+                    // 🚨 拦截 CK 失效报错并直接私聊通知主人
+                    if (videolist?.success === false || videolist?.code === 500 || videolist?.error) {
+                        const errMsg = videolist?.error?.errorDescription || videolist?.message || "未知风控错误";
+                        logger.warn(`[Douyin Push] 博主 ${item.remark} 数据获取被拦截: ${errMsg}`);
+
+                        if (errMsg.includes("ck") || errMsg.includes("失效") || errMsg.includes("获取响应数据失败")) {
+                            // 设置 1 小时通知冷却期，防止多个博主连续触发导致主人被消息轰炸
+                            if (!global.dyCkWarnTime || Date.now() - global.dyCkWarnTime > 3600000) {
+                                global.dyCkWarnTime = Date.now();
+                                const noticeMsg = `⚠️ 抖音推送中止警告\n博主「${item.remark}」数据获取失败！\n原因：${errMsg}\n您的抖音 CK 可能已过期，请尽快更新！`;
+
+                                try {
+                                    // 兼容 TRSS / Miao-Yunzai 获取主人QQ的机制
+                                    let masters = global.BotConfig?.master?.user || global.BotConfig?.masterQQ || [];
+                                    if (!Array.isArray(masters)) masters = [masters];
+
+                                    if (masters.length > 0) {
+                                        const bot = global.Bot?.[this.e?.self_id] || Object.values(global.Bot || {})[0];
+                                        for (let master of masters) {
+                                            if (bot?.pickUser) bot.pickUser(master).sendMsg(noticeMsg).catch(() => null);
+                                            else if (bot?.pickFriend) bot.pickFriend(master).sendMsg(noticeMsg).catch(() => null);
+                                        }
+                                    } else if (this.e?.reply) {
+                                        this.e.reply(noticeMsg);
+                                    }
+                                } catch (e) {
+                                    logger.error("通知主人失败", e);
+                                }
+                            }
+                        }
+                        continue; // 直接跳过当前 UP 主，防止后续提取空数据报错
+                    }
+
                     const userinfo = await this.amagi.douyin.fetcher.fetchUserProfile({ sec_uid, typeMode: 'strict' }).catch(() => ({}))
 
                     // 🚨 修复 2：完美兼容旧版配置文件 (如果没有 :botId 后缀，自动使用当前 bot)
@@ -391,8 +426,8 @@ export class DouYinpush extends Base {
                             const now = Date.now()
                             // 兼容 10 位(秒)和 13 位(毫秒)的时间戳
                             const createTime = String(aweme.create_time).length === 10 ? aweme.create_time * 1000 : aweme.create_time
-                            const timeDifference = now - createTime 
-                            const is_top = aweme.is_top === 1 
+                            const timeDifference = now - createTime
+                            const is_top = aweme.is_top === 1
                             let shouldPush = false
 
                             // 判断是否在 24 小时 (86400000 ms) 内
