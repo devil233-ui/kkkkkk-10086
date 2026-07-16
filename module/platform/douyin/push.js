@@ -361,8 +361,8 @@ export class DouYinpush extends Base {
                         logger.error(`[Douyin Push] 获取视频列表失败:`, e);
                         return {};
                     })
-                    // 🚨 调试探针：直接把抖音底层接口吐出来的完整 JSON 砸在日志里！
-                    logger.debug(`[Douyin 调试] UP主 ${item.remark} 的原始列表数据: \n`);
+                    // 🚨 防日志爆炸版 debug：只打印核心状态、报错信息和拿到的视频数量
+                    logger.debug("[Douyin 调试] UP主 " + item.remark + " 状态: success=" + videolist?.success + " code=" + videolist?.code + " 视频数=" + (videolist?.data?.aweme_list?.length || videolist?.data?.data?.aweme_list?.length || 0));
 
                     // 🚨 拦截 CK 失效报错并直接私聊通知主人
                     if (videolist?.success === false || videolist?.code === 500 || videolist?.error) {
