@@ -613,6 +613,23 @@ export function supportGuoba() {
                 required: false
               },
               {
+                field: 'dynamicTypes',
+                label: '推送动态类型',
+                bottomHelpMessage: '优先于全局设置。留空则继承全局；选择为空数组时不推送该 UP 的任何动态类型',
+                component: 'Select',
+                componentProps: {
+                  mode: 'multiple',
+                  options: [
+                    { label: '视频动态', value: '视频' },
+                    { label: '图文动态', value: '图文' },
+                    { label: '文字动态', value: '文字' },
+                    { label: '转发动态', value: '转发' },
+                    { label: '直播动态', value: '直播' }
+                  ]
+                },
+                required: false
+              },
+              {
                 field: 'filterMode',
                 label: '过滤模式',
                 bottomHelpMessage: '黑名单：命中不推送；白名单：命中才推送',
@@ -695,6 +712,24 @@ export function supportGuoba() {
             options: [
               { label: '视频', value: '视频' },
               { label: '图文', value: '图文' }
+            ]
+          }
+        },
+        {
+          field: 'bilibili.push.dynamicTypes',
+          label: 'B站推送动态类型',
+          helpMessage: '控制默认推送哪些 B 站动态类型',
+          bottomHelpMessage: '支持多选「视频、图文、文字、转发、直播」。留空数组则不推送任何类型；单个 UP 可单独覆盖',
+          component: 'Select',
+          required: false,
+          componentProps: {
+            mode: 'multiple',
+            options: [
+              { label: '视频动态', value: '视频' },
+              { label: '图文动态', value: '图文' },
+              { label: '文字动态', value: '文字' },
+              { label: '转发动态', value: '转发' },
+              { label: '直播动态', value: '直播' }
             ]
           }
         },

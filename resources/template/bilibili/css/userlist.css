@@ -61,6 +61,33 @@ body.dark-mode {
   font-size: 25px;
 }
 
+.push-types {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 18px;
+  color: var(--text-color);
+  font-size: 25px;
+}
+
+.push-type-label {
+  font-weight: 600;
+}
+
+.push-type {
+  padding: 6px 16px;
+  border-radius: 999px;
+  background: #00a1d6;
+  color: #fff;
+  font-size: 22px;
+  line-height: 1.2;
+}
+
+.push-type-disabled {
+  background: #8c8c8c;
+}
+
 .pending-push {
   color: #ffffff;
   padding: 10px 20px;

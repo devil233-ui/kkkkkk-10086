@@ -23,6 +23,49 @@ import fs from 'node:fs'
 /** 已支持推送的动态类型 */
 export { DynamicType } from '@ikenxuan/amagi'
 
+/** @type {Record<string, '视频'|'图文'|'文字'|'转发'|'直播'>} */
+const dynamicTypeNames = {
+    [DynamicType.AV]: '视频',
+    [DynamicType.DRAW]: '图文',
+    [DynamicType.WORD]: '文字',
+    [DynamicType.FORWARD]: '转发',
+    [DynamicType.LIVE_RCMD]: '直播'
+}
+
+const dynamicTypeCodes = Object.fromEntries(
+    Object.entries(dynamicTypeNames).map(([type, name]) => [name, type])
+)
+
+/** B站推送列表可展示的动态类型名称 */
+export const BILIBILI_DYNAMIC_PUSH_TYPES = Object.freeze(Object.values(dynamicTypeNames))
+
+/**
+ * 判断某类动态是否允许推送。
+ * 未配置时保留旧行为（所有已支持的类型均可推送）；空数组则明确禁用全部类型。
+ * @param {string} dynamicType B站动态类型
+ * @param {unknown} configuredTypes 用户或全局配置的类型列表
+ * @returns {boolean}
+ */
+export const isBilibiliDynamicTypeEnabled = (dynamicType, configuredTypes) => {
+    if (!Array.isArray(configuredTypes)) return true
+
+    const typeName = dynamicTypeNames[dynamicType]
+    return Boolean(typeName && (configuredTypes.includes(typeName) || configuredTypes.includes(dynamicType)))
+}
+
+/**
+ * 获取实际生效的推送类型名称，用于推送列表展示。
+ * @param {unknown} configuredTypes 用户或全局配置的类型列表
+ * @returns {string[]}
+ */
+export const getEnabledBilibiliDynamicTypes = (configuredTypes) => {
+    if (!Array.isArray(configuredTypes)) return [...BILIBILI_DYNAMIC_PUSH_TYPES]
+
+    return BILIBILI_DYNAMIC_PUSH_TYPES.filter(typeName =>
+        configuredTypes.includes(typeName) || configuredTypes.includes(dynamicTypeCodes[typeName])
+    )
+}
+
 /**
  * 每个推送项的类型定义
  * @typedef {Object} BilibiliPushItem
@@ -592,6 +635,15 @@ export class Bilibilipush extends Base {
 
                         // 如果 shouldPush 为 true，或该作品距现在的时间差小于一天，则将该动态添加到 willbepushlist 中
                         if (timeDifference < 86400000 || shouldPush) {
+                            // 单个 UP 的 dynamicTypes 优先于全局配置；未设置时保持历史全推送行为
+                            const dynamicTypes = item.dynamicTypes !== undefined
+                                ? item.dynamicTypes
+                                : Config.bilibili?.push?.dynamicTypes
+                            if (!isBilibiliDynamicTypeEnabled(dynamic.type, dynamicTypes)) {
+                                logger.debug(`[Bilibili Push] 已按类型配置跳过 ${item.remark || item.host_mid} 的${dynamicTypeNames[dynamic.type] || dynamic.type}动态：https://t.bilibili.com/${dynamic.id_str}`)
+                                continue
+                            }
+
                             // 将群组ID和机器人ID分离
                             const targets = item.group_id.map(groupWithBot => {
                                 const [groupId, botId] = groupWithBot.split(':')
@@ -841,13 +893,27 @@ export class Bilibilipush extends Base {
 
             if (!userInfo?.data?.data?.card) continue;
 
+            // 优先查找当前群的独立订阅项，避免同一 UP 在不同群使用不同推送类型时展示错误。
+            const pushConfig = Config.pushlist.bilibili?.find(item =>
+                item.host_mid === host_mid && item.group_id?.some(groupWithBot =>
+                    String(groupWithBot).split(':')[0] === String(this.e.group_id)
+                )
+            )
+            const pushEnabled = pushConfig?.switch !== false
+            const dynamicTypes = pushConfig?.dynamicTypes !== undefined
+                ? pushConfig.dynamicTypes
+                : Config.bilibili?.push?.dynamicTypes
+
             renderOpt.push({
                 avatar_img: userInfo.data.data.card.face,
                 username: userInfo.data.data.card.name,
                 host_mid: userInfo.data.data.card.mid,
                 fans: Common.count(userInfo.data.data.follower),
                 total_favorited: Common.count(userInfo.data.data.like_num),
-                following_count: Common.count(userInfo.data.data.card.attention)
+                following_count: Common.count(userInfo.data.data.card.attention),
+                push_enabled: pushEnabled,
+                push_types: pushEnabled ? getEnabledBilibiliDynamicTypes(dynamicTypes) : [],
+                push_status: pushEnabled ? '未开启任何类型' : '已关闭推送'
             })
         }
 

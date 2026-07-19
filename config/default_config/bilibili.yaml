@@ -53,6 +53,14 @@ push:
   cron: '*/10 * * * *'
   # 推送时是否一同解析该动态
   parsedynamic: false
+  # 要推送的动态类型。可选：视频、图文、文字、转发、直播；留空数组则不推送任何动态类型
+  # 每个 UP 主可在 pushlist.yaml 中通过 dynamicTypes 单独覆盖此配置
+  dynamicTypes:
+    - 视频
+    - 图文
+    - 文字
+    - 转发
+    - 直播
   # 是否打印日志
   log: true
   # 推送时遇到视频动态时解析的画质偏好设置，0 为自动根据「pushMaxAutoVideoSize」大小选择，其他为固定画质，仅「parsedynamic」为 true 时生效
