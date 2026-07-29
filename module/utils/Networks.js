@@ -96,7 +96,7 @@ export class Networks {
     this.body = data.body || ''
     this.timeout = data.timeout || 30000
     this.filepath = data.filepath
-    this.maxRetries = data.maxRetries || 3
+    this.maxRetries = data.maxRetries ?? 3
     this.userAgent = getRandomUserAgent()
     this.proxy = Config.request?.proxy?.switch ? {
       host: Config.request.proxy.host,
