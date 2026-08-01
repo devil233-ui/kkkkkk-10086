@@ -56,6 +56,11 @@ const douyinBaseHeaders = {
     Cookie: Config.cookies.douyin
 }
 
+const CARD_SEND_TIMEOUT = 30_000
+const MEDIA_SEND_TIMEOUT = 180_000
+let activePushTask = null
+let activePushStartedAt = 0
+
 export class DouYinpush extends Base {
     /**
      * 构造函数
@@ -76,6 +81,23 @@ export class DouYinpush extends Base {
      * 执行主要的操作流程
      */
     async action() {
+        if (activePushTask) {
+            const elapsedSeconds = Math.round((Date.now() - activePushStartedAt) / 1000)
+            logger.warn(`[Douyin Push] 上一轮任务仍在运行(${elapsedSeconds}秒)，跳过本轮调度`)
+            return false
+        }
+
+        activePushStartedAt = Date.now()
+        activePushTask = this.runAction()
+        try {
+            return await activePushTask
+        } finally {
+            activePushTask = null
+            activePushStartedAt = 0
+        }
+    }
+
+    async runAction() {
         try {
             await this.syncConfigToDatabase()
 
@@ -96,6 +118,7 @@ export class DouYinpush extends Base {
             else return await this.getdata(data)
         } catch (error) {
             logger.error(error)
+            return false
         }
     }
 
@@ -201,33 +224,57 @@ export class DouYinpush extends Base {
                     // ==================== 修复 1：添加图片生成失败拦截机制 ====================
                     // 如果没有被标记为 skip，且 img 渲染失败（返回了 false 或为空），则跳过数据库记录
                     if (!skip && (!img || img === false)) {
-                        logger.warn(`[Douyin Push] 动态${dynamicId}渲染图片失败/超时，取消推送并不写入数据库，等待下一次轮询重试`);
-                        if (this.e && this.e.reply) await this.e.reply(`抖音推送异常：动态${dynamicId}渲染图片失败/超时，取消推送并不写入数据库，等待下一次轮询重试`);
+                        logger.warn(`[Douyin Push] 动态${awemeId}渲染图片失败/超时，取消推送并不写入数据库，等待下一次轮询重试`);
+                        if (this.e && this.e.reply) await this.e.reply(`抖音推送异常：动态${awemeId}渲染图片失败/超时，取消推送并不写入数据库，等待下一次轮询重试`);
                         continue; // 直接跳出当前动态的处理，不进入下面的 targets 循环，也不触发 finally 记录 DB
                     }
 
                     // 遍历目标群组，并发送消息
                     for (const target of pushItem.targets) {
-                        let sendSuccess = false // 【1. 新增】成功状态标志
                         try {
                             const { groupId, botId } = target
+                            if (skip) {
+                                if (!pushItem.living) {
+                                    await douyinDB?.addAwemeCache(awemeId, pushItem.sec_uid, groupId)
+                                }
+                                continue
+                            }
+
+                            const group = Bot?.[botId]?.pickGroup(groupId)
+                            if (!group) {
+                                logger.warn(`bot${botId}不存在或群${groupId}不存在`)
+                                continue
+                            }
+
                             let status = { message_id: '' }
                             if (!skip) {
                                 // ====== 修复：独立包裹卡片发送，防止其假超时中断后续视频解析 ======
                                 try {
-                                    status = Bot?.[botId]?.pickGroup(groupId)
-                                        ? img && await Bot[botId].pickGroup(groupId).sendMsg(img)
-                                        : (logger.warn(`bot${botId}不存在或群${groupId}不存在`), { message_id: '1' })
+                                    status = img && await Common.withTimeout(
+                                        () => group.sendMsg(img),
+                                        CARD_SEND_TIMEOUT,
+                                        '抖音动态卡片 sendMsg'
+                                    )
                                 } catch (imgError) {
                                     const errStr = JSON.stringify(imgError) + String(imgError);
-                                    if (errStr.includes('Timeout') && errStr.includes('sendMsg')) {
-                                        logger.warn(`[Douyin Push] 动态卡片发送超时，大概率已送达，跳过报错继续执行视频/图集解析`);
-                                        status = { message_id: 'fake_success' }; // 伪造一个 message_id 以便让下面的视频解析能通过 if (status.message_id) 的判断
+                                    if (imgError?.code === 'ETIMEDOUT' || (errStr.toLowerCase().includes('timeout') && errStr.includes('sendMsg'))) {
+                                        logger.warn(`[Douyin Push] 动态卡片发送超时，大概率已送达，写入去重缓存后继续执行视频/图集解析`)
+                                        status = { message_id: 'send_timeout' }
                                     } else {
                                         throw imgError; // 真实报错，抛出给外层彻底中断本次推送
                                     }
                                 }
                                 // =================================================================
+
+                                if (!status?.message_id) {
+                                    logger.warn(`[Douyin Push] 动态卡片未返回 message_id，按已提交处理: ${awemeId}`)
+                                    status = { message_id: 'missing_result' }
+                                }
+
+                                // 卡片已提交后立即去重，避免视频处理卡住导致下一轮重复推送。
+                                if (!pushItem.living) {
+                                    await douyinDB?.addAwemeCache(awemeId, pushItem.sec_uid, groupId)
+                                }
 
                                 // 如果是直播推送，更新直播状态
                                 if (pushItem.living && 'room_data' in pushItem.Detail_Data && status.message_id) {
@@ -295,34 +342,29 @@ export class DouYinpush extends Base {
                                                 message: img
                                             }))) :
                                             common?.makeForwardMsg(Bot?.[botId], imageres, '作品图片')
-                                        // 如果bot不存在或群组不存在,则默认message_id为1,防止bot上线发一堆消息
-                                        Bot?.[botId]?.pickGroup(groupId) && forwardMsg
-                                            ? await Bot[botId].pickGroup(groupId).sendMsg(forwardMsg)
-                                            : (logger.warn(`bot${botId}不存在或群${groupId}不存在`), { message_id: '1' })
+                                        if (forwardMsg) {
+                                            await Common.withTimeout(
+                                                () => group.sendMsg(forwardMsg),
+                                                MEDIA_SEND_TIMEOUT,
+                                                '抖音图集 sendMsg'
+                                            )
+                                        }
                                     }
-                                    sendSuccess = true
                                 }
                             }
                         } catch (error) {
-                            const errStr = JSON.stringify(error) + String(error);
-                            if (errStr.includes("Timeout") && errStr.includes("sendMsg")) {
-                                logger.warn(`[Douyin Push] 作品${awemeId}发送超时，真实情况可能未送达群聊，标记为失败等待下一轮重试`);
-                                sendSuccess = false; // <--- 遇到超时老老实实标记为失败
+                            const errStr = JSON.stringify(error) + String(error)
+                            if (error?.code === 'ETIMEDOUT' || (errStr.toLowerCase().includes('timeout') && errStr.includes('sendMsg'))) {
+                                logger.warn(`[Douyin Push] 作品${awemeId}的附加媒体发送超时，卡片已去重，不再重复推送`)
                             } else {
-                                logger.error(`[Douyin Push] 发送${awemeId}真实失败(网络断开等)，取消写入数据库:`, error);
-                                if (this.e && this.e.reply) await this.e.reply(`抖音推送异常：发送${dynamicId}失败(渲染异常、网络断开等)，取消写入数据库:\n${error}`);
-                                sendSuccess = false; // 发生异常，标记为失败
-                            }
-                        } finally {
-                            // 【修复 2：逻辑修改】无论是否发送成功，只有明确送达或被过滤规则 skip，才添加缓存
-                            if (!pushItem.living && (sendSuccess || skip)) {
-                                await douyinDB?.addAwemeCache(awemeId, pushItem.sec_uid, target.groupId)
+                                logger.error(`[Douyin Push] 发送${awemeId}失败:`, error)
+                                if (this.e && this.e.reply) await this.e.reply(`抖音推送异常：发送${awemeId}失败:\n${error}`)
                             }
                         }
                     }
                 } catch (innerError) {
-                    logger.error(`[Douyin Push] 动态 ${dynamicId} 处理崩溃 (渲染超时等)，跳过并不记录数据库，等待下轮重试:`, innerError);
-                    if (this.e && this.e.reply) await this.e.reply(`抖音推送异常：动态${dynamicId}处理崩溃 (渲染超时等)，跳过并不记录数据库，等待下轮重试:\n${innerError}`);
+                    logger.error(`[Douyin Push] 动态 ${awemeId} 处理崩溃 (渲染超时等)，跳过并不记录数据库，等待下轮重试:`, innerError);
+                    if (this.e && this.e.reply) await this.e.reply(`抖音推送异常：动态${awemeId}处理崩溃 (渲染超时等)，跳过并不记录数据库，等待下轮重试:\n${innerError}`);
                     continue; // 发生异常直接跳过这条动态，继续处理下一个 UP 主
                 }
             }

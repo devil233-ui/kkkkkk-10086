@@ -425,16 +425,24 @@ export const uploadFile = async (e, file, videoUrl, options) => {
       : e.isGroup ? e.group : e.friend
 
     if (useGroupFile) {
-      await (botAdapter === 'ICQQ'
-        ? target.fs?.upload(File)
-        : ['LagrangeCore', 'OneBotv11', 'Lagrange.OneBot'].includes(botAdapter)
-          ? target.sendFile?.(File)
-          : target.sendMsg?.(segment.file(File)))
+      await Common.withTimeout(
+        () => botAdapter === 'ICQQ'
+          ? target.fs?.upload(File)
+          : ['LagrangeCore', 'OneBotv11', 'Lagrange.OneBot'].includes(botAdapter)
+            ? target.sendFile?.(File)
+            : target.sendMsg?.(segment.file(File)),
+        180_000,
+        '视频群文件上传'
+      )
       return true
     } else {
-      const status = isActiveMessage
-        ? await target?.sendMsg(segment.video(File) || videoUrl)
-        : await e.reply(segment.video(File) || videoUrl)
+      const status = await Common.withTimeout(
+        () => isActiveMessage
+          ? target?.sendMsg(segment.video(File) || videoUrl)
+          : e.reply(segment.video(File) || videoUrl),
+        180_000,
+        '视频 sendMsg'
+      )
       return !!status?.message_id
     }
   } catch (error) {

@@ -88,6 +88,11 @@ const bilibiliBaseHeaders = {
     Cookie: Config.cookies.bilibili
 }
 
+const CARD_SEND_TIMEOUT = 30_000
+const MEDIA_SEND_TIMEOUT = 180_000
+let activePushTask = null
+let activePushStartedAt = 0
+
 export class Bilibilipush extends Base {
     force = false
     /**
@@ -108,6 +113,23 @@ export class Bilibilipush extends Base {
      * 执行主要的操作流程
      */
     async action() {
+        if (activePushTask) {
+            const elapsedSeconds = Math.round((Date.now() - activePushStartedAt) / 1000)
+            logger.warn(`[Bilibili Push] 上一轮任务仍在运行(${elapsedSeconds}秒)，跳过本轮调度`)
+            return false
+        }
+
+        activePushStartedAt = Date.now()
+        activePushTask = this.runAction()
+        try {
+            return await activePushTask
+        } finally {
+            activePushTask = null
+            activePushStartedAt = 0
+        }
+    }
+
+    async runAction() {
         try {
             await this.syncConfigToDatabase()
             // 清理旧的动态缓存记录
@@ -128,6 +150,7 @@ export class Bilibilipush extends Base {
             }
         } catch (error) {
             logger.error(error)
+            return false
         }
     }
 
@@ -458,15 +481,54 @@ export class Bilibilipush extends Base {
 
                     // 遍历目标数组，并发送消息
                     for (const target of dynamicItem.targets) {
-                        let sendSuccess = false // 成功状态标志
                         try {
+                            const { groupId, botId } = target
+                            if (skip) {
+                                await bilibiliDB?.addDynamicCache(
+                                    dynamicId,
+                                    dynamicItem.host_mid,
+                                    groupId,
+                                    dynamicItem.dynamic_type
+                                )
+                                continue
+                            }
+
+                            const group = Bot?.[botId]?.pickGroup(groupId)
+                            if (!group) {
+                                logger.warn(`bot${botId}不存在或群${groupId}不存在`)
+                                continue
+                            }
+
                             let status = { message_id: '' }
                             if (!skip) {
-                                const { groupId, botId } = target
-                                // 发送消息,如果bot不存在或群组不存在,则默认message_id为1,防止bot上线发一堆消息
-                                status = Bot?.[botId]?.pickGroup(groupId)
-                                    ? img && await Bot[botId].pickGroup(groupId).sendMsg(img)
-                                    : (logger.warn(`bot${botId}不存在或群${groupId}不存在`), { message_id: '1' })
+                                try {
+                                    status = img && await Common.withTimeout(
+                                        () => group.sendMsg(img),
+                                        CARD_SEND_TIMEOUT,
+                                        'B站动态卡片 sendMsg'
+                                    )
+                                } catch (sendError) {
+                                    const errStr = JSON.stringify(sendError) + String(sendError)
+                                    if (sendError?.code === 'ETIMEDOUT' || (errStr.toLowerCase().includes('timeout') && errStr.includes('sendMsg'))) {
+                                        logger.warn(`[Bilibili Push] 动态${dynamicId}卡片发送超时，大概率已送达，写入去重缓存后继续处理`)
+                                        status = { message_id: 'send_timeout' }
+                                    } else {
+                                        throw sendError
+                                    }
+                                }
+
+                                if (!status?.message_id) {
+                                    logger.warn(`[Bilibili Push] 动态卡片未返回 message_id，按已提交处理: ${dynamicId}`)
+                                    status = { message_id: 'missing_result' }
+                                }
+
+                                // 卡片已提交后立即去重，避免附加媒体处理卡住后重复推送。
+                                await bilibiliDB?.addDynamicCache(
+                                    dynamicId,
+                                    dynamicItem.host_mid,
+                                    groupId,
+                                    dynamicItem.dynamic_type
+                                )
 
                                 // ========================================================
                                 // 🚨 核心修复：B站动态精细化向下解析（支持 UP 主专属配置覆盖全局配置）
@@ -530,9 +592,13 @@ export class Bilibilipush extends Base {
                                                     Bot?.makeForwardMsg(imageres.map(img => ({ user_id: 2854196310, message: img }))) :
                                                     common?.makeForwardMsg(Bot?.[botId], imageres, '作品图片');
 
-                                                Bot?.[botId]?.pickGroup(groupId) && forwardMsg
-                                                    ? await Bot[botId].pickGroup(groupId).sendMsg(forwardMsg)
-                                                    : logger.warn(`bot${botId}不存在或群${groupId}不存在`);
+                                                if (forwardMsg) {
+                                                    await Common.withTimeout(
+                                                        () => group.sendMsg(forwardMsg),
+                                                        MEDIA_SEND_TIMEOUT,
+                                                        'B站图集 sendMsg'
+                                                    )
+                                                }
                                                 logger.mark(`[Bilibili Push] 提取图集已成功合并为转发消息发送！`);
                                             }
                                         } catch (error) {
@@ -541,29 +607,16 @@ export class Bilibilipush extends Base {
                                     }
                                 }
                                 // ========================================================
-                                sendSuccess = true
                             }
                         } catch (error) {
                             // 将错误对象转为字符串以便检查
-                            const errStr = JSON.stringify(error) + String(error);
+                            const errStr = JSON.stringify(error) + String(error)
                             // 拦截底层框架的假超时报错 (retcode 1200 或 NTEvent Timeout)
-                            if (errStr.includes('Timeout') && errStr.includes('sendMsg')) {
-                                logger.warn(`[Bilibili Push] 动态${dynamicId}底层返回超时，但大概率已送达，标记为成功以防重复推送`);
-                                sendSuccess = true; // 假报错，强行标记为成功！
+                            if (error?.code === 'ETIMEDOUT' || (errStr.toLowerCase().includes('timeout') && errStr.includes('sendMsg'))) {
+                                logger.warn(`[Bilibili Push] 动态${dynamicId}的附加媒体发送超时，卡片已去重，不再重复推送`)
                             } else {
-                                logger.error(`[Bilibili Push] 发送${dynamicId}真实失败(网络断开等)，取消写入数据库:`, error);
-                                if (this.e && this.e.reply) await this.e.reply(`B站推送异常：发送${dynamicId}失败(渲染异常、网络断开等)，取消写入数据库:\n${error}`);
-                                sendSuccess = false; // 真实的异常，标记为失败
-                            }
-                        } finally {
-                            // 【4. 修复】只有明确发送成功，或触发了屏蔽词/屏蔽类型被 skip 的，才写入数据库
-                            if (sendSuccess || skip) {
-                                await bilibiliDB?.addDynamicCache(
-                                    dynamicId,
-                                    dynamicItem.host_mid,
-                                    target.groupId,
-                                    dynamicItem.dynamic_type
-                                )
+                                logger.error(`[Bilibili Push] 发送${dynamicId}失败:`, error)
+                                if (this.e && this.e.reply) await this.e.reply(`B站推送异常：发送${dynamicId}失败:\n${error}`)
                             }
                         }
                     }

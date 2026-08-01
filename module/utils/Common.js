@@ -272,6 +272,32 @@ class Tools {
     new Promise(resolve => setTimeout(resolve, ms))
   }
 
+  /**
+   * 为异步操作设置最大等待时间。
+   * @template T
+   * @param {Promise<T> | (() => Promise<T>)} task
+   * @param {number} timeoutMs
+   * @param {string} label
+   * @returns {Promise<T>}
+   */
+  async withTimeout(task, timeoutMs, label = '异步操作') {
+    let timeoutId
+    const operation = typeof task === 'function' ? Promise.resolve().then(task) : Promise.resolve(task)
+    const timeout = new Promise((_, reject) => {
+      timeoutId = setTimeout(() => {
+        const error = new Error(`${label} timeout after ${timeoutMs}ms`)
+        error.code = 'ETIMEDOUT'
+        reject(error)
+      }, timeoutMs)
+    })
+
+    try {
+      return await Promise.race([operation, timeout])
+    } finally {
+      clearTimeout(timeoutId)
+    }
+  }
+
 }
 
 export default new Tools()
