@@ -1,4 +1,5 @@
 import fs from 'fs'
+import path from 'node:path'
 import YAML from 'yaml'
 
 /**
@@ -102,14 +103,19 @@ export default class YamlReader {
    * @returns {boolean} 操作是否成功
    */
   write() {
+    let tempFile = ''
     try {
-      fs.writeFileSync(this.filePath,
-        this.document.toString({
-          lineWidth: -1,
-          simpleKeys: true
-        }), 'utf8')
+      const content = this.document.toString({
+        lineWidth: -1,
+        simpleKeys: true
+      })
+      const directory = path.dirname(this.filePath)
+      tempFile = path.join(directory, `.${path.basename(this.filePath)}.${process.pid}.${Date.now()}.tmp`)
+      fs.writeFileSync(tempFile, content, 'utf8')
+      fs.renameSync(tempFile, this.filePath)
       return true
     } catch (error) {
+      if (tempFile && fs.existsSync(tempFile)) fs.unlinkSync(tempFile)
       logger.error(`写入YAML文件失败: ${this.filePath}`, error)
       return false
     }

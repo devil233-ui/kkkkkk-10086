@@ -167,10 +167,15 @@ class Cfg {
 
     /** @type {Record<string, any>} 文件监听器对象 */
     watcher = { config: {}, defSet: {} }
+    /** @type {Record<string, NodeJS.Timeout>} 配置重载防抖计时器 */
+    reloadTimers = {}
+    /** 推送列表配置异常的最近主人通知时间 */
+    pushlistWarningAt = 0
 
     constructor() {
         this.config = {}
         this.watcher = { config: {}, defSet: {} }
+        this.reloadTimers = {}
     }
 
     /**
@@ -185,7 +190,7 @@ class Cfg {
         // 用户配置目录路径
         const path = `${Version.pluginPath}/config/config/`
         // 创建配置目录（如果不存在）
-        if (!fs.existsSync(path)) fs.mkdirSync(path)
+        if (!fs.existsSync(path)) fs.mkdirSync(path, { recursive: true })
         // 默认配置目录路径
         const pathDef = `${Version.pluginPath}/config/default_config/`
         // 获取所有yaml配置文件
@@ -193,26 +198,23 @@ class Cfg {
 
         // 处理每个配置文件
         for (const file of files) {
+            const configFile = `${path}${file}`
+            const defaultFile = `${pathDef}${file}`
             // 如果用户配置不存在，复制默认配置
-            if (!fs.existsSync(`${path}${file}`)) {
-                fs.copyFileSync(`${pathDef}${file}`, `${path}${file}`)
+            if (!fs.existsSync(configFile)) {
+                fs.copyFileSync(defaultFile, configFile)
             } else {
                 // 解析用户配置和默认配置
-                const config = YAML.parse(fs.readFileSync(`${path}${file}`, 'utf8'))
-                const defConfig = YAML.parse(fs.readFileSync(`${pathDef}${file}`, 'utf8'))
+                const config = this.readYamlFile(configFile).value
+                const defConfig = this.readYamlFile(defaultFile).value
                 // 合并配置并检查差异
                 /** @type {{differences: boolean, result: Record<string, any>}} */
                 const { differences, result } = this.mergeObjectsWithPriority(config, defConfig)
-                // 如果有差异，更新配置文件
-                if (differences) {
-                    fs.copyFileSync(`${pathDef}${file}`, `${path}${file}`)
-                    for (const key in result) {
-                        this.modify(/** @type {keyof ConfigType} */(file.replace('.yaml', '')), key, result[key])
-                    }
-                }
+                // 如果有差异，使用完整内容原子替换，避免监听器读到半写入文件
+                if (differences) this.writeMergedConfig(defaultFile, configFile, result)
             }
             // 监听配置文件变化
-            this.watch(`${path}${file}`, file.replace('.yaml', ''), 'config')
+            this.watch(configFile, file.replace('.yaml', ''), 'config')
         }
         return this
     }
@@ -463,28 +465,57 @@ class Cfg {
         const key = `${type}.${name}`
 
         // 如果配置已缓存，直接返回
-        if (this.config[key]) return this.config[key]
+        if (Object.hasOwn(this.config, key)) return this.config[key]
 
-        try {
-            // 检查文件是否存在
-            if (!fs.existsSync(file)) {
-                // 文件不存在时返回空对象
-                this.config[key] = {}
-            } else {
-                // 读取并解析YAML文件
-                this.config[key] = YAML.parse(fs.readFileSync(file, 'utf8'))
-            }
-        } catch (error) {
-            // 解析失败时返回空对象
-            logger.warn(`[Config] 解析配置文件失败: ${file}`)
-            this.config[key] = {}
-        }
+        const parsed = this.readYamlFile(file)
+        // 空文件、缺失文件或解析异常不能进入缓存，避免短暂写入状态导致永久空配置。
+        if (parsed.valid) this.config[key] = parsed.value
 
         // 监听配置文件变化
         this.watch(file, name, type)
 
         // 返回配置对象
-        return this.config[key]
+        return parsed.value
+    }
+
+    /**
+     * 读取YAML配置文件。不可用内容返回空对象，但不标记为有效配置。
+     * @param {string} file 配置文件路径
+     * @returns {{valid: boolean, value: Record<string, any>, reason?: string}}
+     */
+    readYamlFile(file) {
+        try {
+            if (!fs.existsSync(file)) return { valid: false, value: {}, reason: '文件不存在' }
+
+            const value = YAML.parse(fs.readFileSync(file, 'utf8'))
+            if (!value || typeof value !== 'object' || Array.isArray(value)) {
+                return { valid: false, value: {}, reason: '内容为空或格式不是对象' }
+            }
+            return { valid: true, value }
+        } catch (error) {
+            logger.warn(`[Config] 解析配置文件失败: ${file}`)
+            return { valid: false, value: {}, reason: 'YAML解析失败' }
+        }
+    }
+
+    /**
+     * 基于默认配置生成完整内容后原子替换用户配置，避免监听器读到半写入文件。
+     * @param {string} defaultFile 默认配置路径
+     * @param {string} configFile 用户配置路径
+     * @param {Record<string, any>} config 合并后的配置
+     */
+    writeMergedConfig(defaultFile, configFile, config) {
+        const document = YAML.parseDocument(fs.readFileSync(defaultFile, 'utf8'))
+        for (const key in config) document.set(key, config[key])
+
+        const tempFile = `${configFile}.${process.pid}.${Date.now()}.tmp`
+        try {
+            fs.writeFileSync(tempFile, document.toString({ lineWidth: -1, simpleKeys: true }), 'utf8')
+            fs.renameSync(tempFile, configFile)
+        } catch (error) {
+            if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile)
+            throw error
+        }
     }
 
     /**
@@ -499,28 +530,87 @@ class Cfg {
         // 如果已经在监听，则直接返回
         if (this.watcher[key]) return
 
-        // 创建文件监听器
-        const watcher = chokidar.watch(file)
-        // 文件变化时的处理
-        watcher.on('change', async () => {
-            // 删除缓存的配置
-            delete this.config[key]
-            // 记录日志
-            logger.mark(`[${Version.pluginName}][修改配置文件][${type}][${name}]`)
-            // 如果是pushlist配置文件变化，同步数据库配置
-            if (name === 'pushlist' && type === 'config') {
-                try {
-                    await this.syncPushlistToDatabase()
-                } catch (error) {
-                    logger.error('[Config] 文件监听同步数据库失败:', error)
-                } finally {
-                    await this.syncConfigToDatabase() // 同步配置到数据库
-                }
-            }
+        const watcher = chokidar.watch(file, {
+            ignoreInitial: true,
+            awaitWriteFinish: { stabilityThreshold: 300, pollInterval: 50 }
         })
+        const scheduleReload = () => {
+            clearTimeout(this.reloadTimers[key])
+            this.reloadTimers[key] = setTimeout(() => {
+                this.reloadConfig(file, name, type, key).catch(error => {
+                    logger.error(`[Config] 重载配置文件失败: ${file}`, error)
+                })
+            }, 300)
+        }
+
+        watcher.on('add', scheduleReload)
+        watcher.on('change', scheduleReload)
+        watcher.on('unlink', scheduleReload)
 
         // 保存监听器实例
         this.watcher[key] = watcher
+    }
+
+    /**
+     * 在文件稳定后刷新配置。若新文件不可用，继续保留上一份有效缓存。
+     * @param {string} file 配置文件路径
+     * @param {string} name 配置名称
+     * @param {string} type 配置类型
+     * @param {string} key 缓存键
+     */
+    async reloadConfig(file, name, type, key) {
+        const parsed = this.readYamlFile(file)
+        if (!parsed.valid) {
+            logger.warn(`[Config] 配置文件暂不可用(${parsed.reason}): ${file}，继续使用上一份有效配置`)
+            if (name === 'pushlist' && type === 'config') this.notifyPushlistConfigIssue()
+            return
+        }
+
+        this.config[key] = parsed.value
+        logger.mark(`[${Version.pluginName}][修改配置文件][${type}][${name}]`)
+        if (name !== 'pushlist' || type !== 'config') return
+
+        try {
+            await this.syncPushlistToDatabase()
+        } catch (error) {
+            logger.error('[Config] 文件监听同步数据库失败:', error)
+        } finally {
+            await this.syncConfigToDatabase()
+        }
+    }
+
+    /**
+     * 向机器人主人通知推送列表配置异常，避免配置暂不可用时悄然停推。
+     */
+    notifyPushlistConfigIssue() {
+        if (Date.now() - this.pushlistWarningAt < 60 * 60 * 1000) return
+
+        let masters = global.BotConfig?.master?.user || global.BotConfig?.masterQQ || []
+        if (!Array.isArray(masters)) masters = [masters]
+        masters = masters.filter(Boolean)
+
+        const bot = Object.values(global.Bot || {}).find(item => item?.pickUser || item?.pickFriend)
+        if (masters.length === 0 || !bot) {
+            logger.warn('[Config] 无法向主人发送推送配置异常通知：主人或机器人不存在')
+            return
+        }
+
+        this.pushlistWarningAt = Date.now()
+        const message = '⚠️kkkkkk-10086推送配置异常\npushlist.yaml重载时为空、缺失或格式错误。为避免漏推送，当前进程继续使用上一份有效配置；请检查配置文件。'
+        for (const master of masters) {
+            try {
+                const target = bot.pickUser?.(master) || bot.pickFriend?.(master)
+                if (!target?.sendMsg) {
+                    logger.warn('[Config] 无法向主人发送推送配置异常通知：主人' + master + '不可达')
+                    continue
+                }
+                Promise.resolve(target.sendMsg(message)).catch(error => {
+                    logger.warn('[Config] 推送配置异常主人通知发送失败：' + error)
+                })
+            } catch (error) {
+                logger.warn('[Config] 推送配置异常主人通知发送失败：' + error)
+            }
+        }
     }
 
     /**
