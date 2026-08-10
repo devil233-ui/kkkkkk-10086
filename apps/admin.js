@@ -1,6 +1,6 @@
 import { Config, Render, Version, Common } from '../module/utils/index.js'
 import { bilibiliLogin } from '../module/platform/bilibili/login.js'
-// import { dylogin } from '../module/platform/douyin/login.js'
+import { douyinLogin } from '../module/platform/douyin/login.js'
 import { bilibiliDB } from '../module/db/index.js'
 import { douyinDB } from '../module/db/index.js'
 import fs from 'fs'
@@ -316,8 +316,10 @@ export class kkkAdmin extends plugin {
   }
 
   async dylogin(e) {
-    // await dylogin(e)
-    logger.warn('暂未修复抖音登录问题')
+    await douyinLogin(e, async () => {
+      const context = await this.awaitContext(false, 120, '短信验证码输入超时，抖音登录已取消')
+      return context?.msg
+    })
     return true
   }
 
