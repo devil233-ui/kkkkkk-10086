@@ -42,7 +42,7 @@ export class Bilibili extends Base {
     isVIP
     /**
      * b站数据类型
-     * @type {import('./getid.js').BilibiliDataTypes[keyof import('./getid.js').BilibiliDataTypes]}
+     * @type {import('./getID.js').BilibiliDataTypes[keyof import('./getID.js').BilibiliDataTypes]}
      */
     Type
     /** @type {boolean} */
@@ -72,7 +72,7 @@ export class Bilibili extends Base {
 
     /**
      * 处理B站资源的异步方法
-     * @param {import('./getid.js').BilibiliId} iddata - 包含资源ID和相关数据的对象
+     * @param {import('./getID.js').BilibiliId} iddata - 包含资源ID和相关数据的对象
      * @returns {Promise<boolean | void>}
      */
     async RESOURCES(iddata) {

@@ -5,7 +5,7 @@ import { Networks } from '../../utils/Networks.js'
  * @param {string} url 分享连接
  * @returns
  */
-export default async function GetKuaishouID (url) {
+export default async function getKuaishouID (url) {
   const longLink = await new Networks({ url }).getLongLink()
   let result
 

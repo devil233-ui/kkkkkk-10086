@@ -165,7 +165,7 @@ export class DouYinpush extends Base {
                      * @type {import('@kaguyajs/trss-yunzai-types').icqq.segment[]}
                      */
                     let img = []
-                    /** @type {import('./getid.js').DouyinIdData} 抖音数据类型 */
+                    /** @type {import('./getID.js').DouyinIdData} 抖音数据类型 */
                     let iddata = { is_mp4: true, type: 'one_work' }
 
                     // 如果不跳过，获取抖音ID数据

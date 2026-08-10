@@ -1,6 +1,6 @@
-import { KuaiShou, GetKuaishouID, KuaishouData } from '../module/platform/kuaishou/index.js'
+import { KuaiShou, getKuaishouID, KuaishouData } from '../module/platform/kuaishou/index.js'
 import { Bilibili, getBilibiliID } from '../module/platform/bilibili/index.js'
-import { DouYin, getDouyinID } from '../module/platform/douyin/index.js'
+import { DouYin, extractDouyinUrl, getDouyinID } from '../module/platform/douyin/index.js'
 import { Config, Common, UploadRecord } from '../module/utils/index.js'
 import { getDouyinData } from '@ikenxuan/amagi'
 import { QRCodeScanner } from '../module/utils/QRCodeScanner.js';
@@ -167,9 +167,9 @@ export class kkkTools extends plugin {
    * @returns {Promise<boolean>} 处理结果
    */
   async douyin(e) {
-    const urlMatch = e.msg.match(/https?:\/\/(?:www\.|v\.|jx\.|m\.|jingxuan\.)?(douyin\.com|iesdouyin\.com)\/[^\s]+/g)
-    if (urlMatch && urlMatch[0]) {
-      const iddata = await getDouyinID(urlMatch[0])
+    const url = extractDouyinUrl(e.msg)
+    if (url) {
+      const iddata = await getDouyinID(url)
       await new DouYin(e, iddata).RESOURCES(iddata)
     }
     return true
@@ -213,7 +213,7 @@ export class kkkTools extends plugin {
    */
   async kuaishou(e) {
     const url = e.msg.replaceAll('\\', '').match(/(https:\/\/v\.kuaishou\.com\/\w+|https:\/\/www\.kuaishou\.com\/f\/[a-zA-Z0-9]+)/g)
-    const Iddata = await GetKuaishouID(url)
+    const Iddata = await getKuaishouID(url)
     const WorkData = await new KuaishouData(Iddata.type).GetData({ photoId: Iddata.id })
     await new KuaiShou(e, Iddata).Action(WorkData)
     return true

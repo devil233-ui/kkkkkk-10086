@@ -1,5 +1,6 @@
 import { baseHeaders, Networks } from '../../utils/index.js'
 import fetch from 'node-fetch'
+import { parseDirectDouyinWorkUrl } from './helpers.js'
 
 /**
  * @typedef {object} DouyinDataTypes
@@ -34,6 +35,17 @@ export const getDouyinID = async (url, log = true) => {
   let result = { type: 'undefined' }
   let longLink = ''
   try {
+    const directWork = parseDirectDouyinWorkUrl(url)
+    if (directWork) {
+      result = {
+        type: 'one_work',
+        aweme_id: directWork.aweme_id,
+        is_mp4: directWork.is_mp4
+      }
+      if (log) logger.info(`[抖音链接] 类型: ${directWork.kind}`, result)
+      return result
+    }
+
     // 获取长链接
     longLink = await new Networks({
       url,
@@ -90,10 +102,10 @@ export const getDouyinID = async (url, log = true) => {
       // 图文作品链接
       [
         'note',
-        (url) => /note\/\d+/.test(url),
+        (url) => /(?:note|article)\/\d+/.test(url),
         (url) => ({
           type: 'one_work',
-          aweme_id: url.match(/note\/(\d+)/)?.[1],
+          aweme_id: url.match(/(?:note|article)\/(\d+)/)?.[1],
           is_mp4: false
         })
       ],

@@ -2,6 +2,7 @@ import { Base, Config, UploadRecord, Networks, Render, mergeFile, Version, Commo
 import common from '../../../../../lib/common/common.js'
 import { markdown } from '@karinjs/md-html'
 import { douyinComments } from './index.js'
+import { resolveDouyinMusicUrl } from './helpers.js'
 import { join } from 'node:path'
 import QRCode from 'qrcode'
 import fs from 'fs'
@@ -37,7 +38,7 @@ let mp4size = ''
 let img
 
 export class DouYin extends Base {
-  /** @type {import('./getid.js').DouyinDataTypes[keyof import('./getid.js').DouyinDataTypes]} */
+  /** @type {import('./getID.js').DouyinDataTypes[keyof import('./getID.js').DouyinDataTypes]} */
   type
   /** @type {boolean | undefined} */
   is_mp4
@@ -45,13 +46,13 @@ export class DouYin extends Base {
   is_slides
   /**
    * @typedef {Object} ExtendedDouyinIdData
-   * @property {import('./getid.js').DouyinDataTypes[keyof import('./getid.js').DouyinDataTypes]} type
+   * @property {import('./getID.js').DouyinDataTypes[keyof import('./getID.js').DouyinDataTypes]} type
    * @property {boolean | undefined} is_mp4
    */
 
   /**
    * @param {*} e 
-   * @param {import('./getid.js').DouyinIdData & ExtendedDouyinIdData} iddata
+   * @param {import('./getID.js').DouyinIdData & ExtendedDouyinIdData} iddata
    */
   constructor(e, iddata) {
     super(e)
@@ -62,7 +63,7 @@ export class DouYin extends Base {
   }
 
   /**
-   * @param {import('./getid.js').DouyinIdData} data 抖音数据
+   * @param {import('./getID.js').DouyinIdData} data 抖音数据
    * @returns {Promise<*>}
    */
   async RESOURCES(data) {
@@ -75,6 +76,10 @@ export class DouYin extends Base {
             aweme_id: data.aweme_id,
             typeMode: "strict"
           })
+          const awemeDetail = VideoData?.data?.aweme_detail
+          if (!awemeDetail) throw new Error(`获取作品${data.aweme_id}详情失败，接口未返回aweme_detail`)
+          const awemeType = awemeDetail.aweme_type
+          if (typeof awemeType === 'number') this.is_mp4 = awemeType === 0 || awemeType === 55
           const CommentsData = await this.amagi.douyin.fetcher.fetchWorkComments({
             aweme_id: data.aweme_id,
             count: Config.douyin.numcomments,
@@ -128,8 +133,9 @@ export class DouYin extends Base {
                 const images = []
                 const temp = []
                 /** BGM */
-                const liveimgbgm = await downloadFile(
-                  VideoData.data.aweme_detail.music.play_url.uri,
+                const musicUrl = resolveDouyinMusicUrl(VideoData.data.aweme_detail.music)
+                const liveimgbgm = musicUrl ? await downloadFile(
+                  musicUrl,
                   {
                     title: `Douyin_tmp_A_${Date.now()}.mp3`,
                     headers: {
@@ -138,8 +144,8 @@ export class DouYin extends Base {
                       Cookie: ''
                     }
                   }
-                )
-                temp.push(liveimgbgm)
+                ) : null
+                if (liveimgbgm) temp.push(liveimgbgm)
                 const images1 = VideoData.data.aweme_detail.images || []
                 if (!images1.length) {
                   logger.debug('未获取到合辑的图片数据')
@@ -165,6 +171,11 @@ export class DouYin extends Base {
                   )
 
                   if (liveimg.filepath) {
+                    if (!liveimgbgm?.filepath) {
+                      temp.push(liveimg)
+                      images.push(segment.video(liveimg.filepath))
+                      continue
+                    }
                     const resolvefilepath = Common.tempDri.video + `Douyin_Result_${Date.now()}.mp4`
                     await mergeFile('视频*3 + 音频', {
                       path: liveimg.filepath,
@@ -204,18 +215,36 @@ export class DouYin extends Base {
           /** 背景音乐 */
           if (VideoData.data.aweme_detail.music && (Config.douyin.douyinTip)?.includes('背景音乐')) {
             const music = VideoData.data.aweme_detail.music
-            const music_url = music.play_url.uri // BGM link
-            if (this.is_mp4 === false && Config.app.removeCache === false && music_url !== undefined) {
+            const music_url = resolveDouyinMusicUrl(music)
+            if (music_url && this.is_mp4 === false && Config.app.removeCache === false) {
               try {
-                const path = Common.tempDri.images + `${g_title}/BGM.mp3`
+                const cacheTitle = g_title || VideoData.data.aweme_detail.preview_title.substring(0, 50).replace(/[\\/:*?"<>|\r\n]/g, ' ')
+                Common.mkdir(`${Common.tempDri.images}${cacheTitle}`)
+                const path = Common.tempDri.images + `${cacheTitle}/BGM.mp3`
                 await new Networks({ url: music_url, type: 'arraybuffer' }).getData().then((data) => fs.promises.writeFile(path, data))
               } catch (error) {
                 logger.error(error)
               }
             }
-            const haspath = music_url && this.is_mp4 === false && music_url !== undefined
+            const haspath = music_url && this.is_mp4 === false
             if (haspath) {
-              await this.e.reply(await UploadRecord(this.e, music_url, 0, Config.douyin.sendHDrecord ? false : true))
+              let audioFile
+              try {
+                audioFile = await downloadFile(music_url, {
+                  title: `Douyin_BGM_${data.aweme_id}_${Date.now()}.mp3`,
+                  headers: {
+                    ...this.headers,
+                    Referer: 'https://www.douyin.com/'
+                  }
+                })
+                if (audioFile?.filepath) {
+                  await this.e.reply(await UploadRecord(this.e, audioFile.filepath, 0, Config.douyin.sendHDrecord ? false : true))
+                }
+              } finally {
+                if (audioFile?.filepath) await Common.removeFile(audioFile.filepath, true)
+              }
+            } else if (this.is_mp4 === false) {
+              logger.warn(`[抖音音频] 作品${data.aweme_id}未提供可用的背景音乐地址`)
             }
           }
 
