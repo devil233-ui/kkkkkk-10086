@@ -37,6 +37,14 @@ import fs from 'fs'
 let mp4size = ''
 let img
 
+const getFirstUrl = (data) => data?.url_list?.find(Boolean) || ''
+
+const formatVideoDuration = (duration) => {
+  const seconds = Math.floor((duration || 0) / 1000)
+  const minutes = Math.floor(seconds / 60)
+  return `${minutes}:${String(seconds % 60).padStart(2, '0')}`
+}
+
 export class DouYin extends Base {
   /** @type {import('./getID.js').DouyinDataTypes[keyof import('./getID.js').DouyinDataTypes]} */
   type
@@ -250,14 +258,13 @@ export class DouYin extends Base {
 
           /** 视频 */
           let FPS
-          const video_res = []
           const sendvideofile = true
+          let video = null
+          let cover = ''
           if (this.is_mp4 && (Config.douyin.douyinTip)?.includes('视频')) {
-            const video_data = []
-            const videores = []
             // 视频地址特殊判断：play_addr_h264、play_addr、
-            const video = VideoData.data.aweme_detail.video
-            FPS = video.bit_rate[0].FPS // FPS
+            video = VideoData.data.aweme_detail.video
+            FPS = video.bit_rate[0]?.FPS || '获取失败' // FPS
             if (Config.douyin.autoResolution) {
               logger.debug(`开始排除不符合条件的视频分辨率；\n
               共拥有${logger.yellow(video.bit_rate.length)}个视频源\n
@@ -275,22 +282,90 @@ export class DouYin extends Base {
             if (!g_video_url) {
               g_video_url = `https://aweme.snssdk.com/aweme/v1/play/?video_id=${video.play_addr.uri}&ratio=1080p&line=0`
             }
-            const cover = video.origin_cover.url_list[0] || '' // video cover image
+            cover = getFirstUrl(video.animated_cover) || getFirstUrl(video.dynamic_cover) || getFirstUrl(video.cover_original_scale) || getFirstUrl(video.cover) || getFirstUrl(video.origin_cover)
 
             const title = VideoData.data.aweme_detail.preview_title.substring(0, 80).replace(/[\\/:\*\?"<>\|\r\n]/g, ' ') // video title
             g_title = title
             mp4size = (video.bit_rate[0].play_addr.data_size / (1024 * 1024)).toFixed(2)
-            videores.push(`标题：\n${title}`)
-            videores.push(`视频帧率：${'' + FPS}\n视频大小：${mp4size}MB`)
-            videores.push(
-              `永久直链(302跳转)\nhttps://aweme.snssdk.com/aweme/v1/play/?video_id=${VideoData.data.aweme_detail.video.play_addr.uri}&ratio=1080p&line=0`
-            )
-            videores.push(`视频直链（有时效性，永久直链在下一条消息）：\n${g_video_url}`)
-            videores.push(segment.image(cover))
             logger.info('视频地址', `https://aweme.snssdk.com/aweme/v1/play/?video_id=${VideoData.data.aweme_detail.video.play_addr.uri}&ratio=1080p&line=0`)
-            const res = common.makeForwardMsg(this.e, videores, '视频基本信息')
-            video_data.push(res)
-            video_res.push(video_data)
+          }
+
+          if (this.is_mp4 && (Config.douyin.douyinTip)?.includes('视频')) {
+            const aweme = VideoData.data.aweme_detail
+            const statistics = aweme.statistics || {}
+            const displayContent = Config.douyin.displayContent || ['cover', 'title', 'author', 'stats']
+            if (Config.douyin.videoInfoMode === 'text') {
+              const contentMap = {
+                cover: segment.image(cover),
+                title: `\n标题：${aweme.desc || g_title}\n`,
+                author: `\n作者：${aweme.author?.nickname || '无法获取'}\n`,
+                stats: `\n点赞：${Common.count(statistics.digg_count)}\n评论：${Common.count(statistics.comment_count)}\n收藏：${Common.count(statistics.collect_count)}\n分享：${Common.count(statistics.share_count)}`
+              }
+              const replyContent = []
+              for (const item of ['cover', 'title', 'author', 'stats']) {
+                if (displayContent.includes(item) && contentMap[item]) replyContent.push(contentMap[item])
+              }
+              if (replyContent.length) await this.e.reply(replyContent)
+            } else {
+              let userProfile
+              if (displayContent.includes('author') && aweme.author?.sec_uid) {
+                try {
+                  const userProfileData = await this.amagi.douyin.fetcher.fetchUserProfile({
+                    sec_uid: aweme.author.sec_uid,
+                    typeMode: 'strict'
+                  })
+                  userProfile = userProfileData?.data?.user
+                } catch (error) {
+                  logger.warn('[抖音] 获取作者主页信息失败，继续渲染视频信息图', error)
+                }
+              }
+              const videoInfoImg = await Render('douyin/videoInfo', {
+                desc: aweme.desc || g_title,
+                aweme_id: aweme.aweme_id,
+                share_url: aweme.share_url,
+                image_url: cover,
+                create_time: Common.convertTimestampToDateTime(aweme.create_time),
+                showCover: displayContent.includes('cover'),
+                showTitle: displayContent.includes('title'),
+                showAuthor: displayContent.includes('author'),
+                showStats: displayContent.includes('stats'),
+                statistics: {
+                  digg_count: Common.count(statistics.digg_count),
+                  comment_count: Common.count(statistics.comment_count),
+                  collect_count: Common.count(statistics.collect_count),
+                  share_count: Common.count(statistics.share_count)
+                },
+                author: {
+                  name: aweme.author?.nickname || '无法获取',
+                  avatar: getFirstUrl(aweme.author?.avatar_thumb) || getFirstUrl(aweme.author?.avatar_larger),
+                  short_id: aweme.author?.unique_id || aweme.author?.short_id || '无法获取'
+                },
+                user_profile: userProfile
+                  ? {
+                    ip_location: userProfile.ip_location,
+                    follower_count: Common.count(userProfile.follower_count),
+                    total_favorited: Common.count(userProfile.total_favorited),
+                    aweme_count: Common.count(userProfile.aweme_count)
+                  }
+                  : undefined,
+                music: aweme.music
+                  ? {
+                    author: aweme.music.author,
+                    title: aweme.music.title,
+                    cover: getFirstUrl(aweme.music.cover_hd) || getFirstUrl(aweme.music.cover_large) || getFirstUrl(aweme.music.cover_thumb)
+                  }
+                  : undefined,
+                video: video
+                  ? {
+                    duration: formatVideoDuration(video.duration),
+                    width: video.width,
+                    height: video.height,
+                    ratio: video.ratio
+                  }
+                  : undefined
+              })
+              await this.e.reply(videoInfoImg)
+            }
           }
 
           /** 发送视频 */

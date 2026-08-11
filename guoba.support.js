@@ -258,6 +258,36 @@ export function supportGuoba() {
           required: false
         },
         {
+          field: 'douyin.videoInfoMode',
+          label: '视频信息返回形式',
+          bottomHelpMessage: '选择使用渲染卡片或文本展示作品信息',
+          component: 'RadioGroup',
+          required: true,
+          componentProps: {
+            options: [
+              { label: '渲染卡片', value: 'image' },
+              { label: '文本消息', value: 'text' }
+            ]
+          }
+        },
+        {
+          field: 'douyin.displayContent',
+          label: '视频信息展示内容',
+          bottomHelpMessage: '选择解析卡片或文本中展示的内容',
+          component: 'Select',
+          required: true,
+          componentProps: {
+            mode: 'multiple',
+            allowCreate: false,
+            options: [
+              { label: '封面', value: 'cover' },
+              { label: '标题', value: 'title' },
+              { label: '作者', value: 'author' },
+              { label: '统计信息', value: 'stats' }
+            ]
+          }
+        },
+        {
           component: 'Divider',
           label: '抖音视频推送配置',
           componentProps: {
