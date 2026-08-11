@@ -2,7 +2,7 @@ import { KuaiShou, getKuaishouID, KuaishouData } from '../module/platform/kuaish
 import { Bilibili, getBilibiliID } from '../module/platform/bilibili/index.js'
 import { DouYin, extractDouyinUrl, getDouyinID } from '../module/platform/douyin/index.js'
 import { Config, Common, UploadRecord } from '../module/utils/index.js'
-import { getDouyinData } from '@ikenxuan/amagi'
+import { getDouyinData } from '../module/platform/douyin/api.js'
 import { QRCodeScanner } from '../module/utils/QRCodeScanner.js';
 
 // 用户状态存储对象
