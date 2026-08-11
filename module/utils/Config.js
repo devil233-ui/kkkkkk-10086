@@ -43,8 +43,8 @@ import _ from 'lodash'
  * @property {boolean} [DouyinConfig.realCommentCount] 评论图是否显示真实评论数量
  * @property {boolean} [DouyinConfig.sendHDrecord] 图集BGM是否使用高清语音发送
  * @property {boolean} [DouyinConfig.autoResolution] 根据「视频拦截阈值」自动选择合适的分辨率
- * @property {'text'|'image'} [DouyinConfig.videoInfoMode] 视频信息返回形式
- * @property {('cover'|'title'|'author'|'stats')[]} [DouyinConfig.displayContent] 视频信息展示内容
+ * @property {'text'|'image'} [DouyinConfig.videoInfoMode] 作品信息返回形式
+ * @property {('cover'|'title'|'author'|'stats')[]} [DouyinConfig.displayContent] 作品信息展示内容
  * @property {DouyinPushConfig} [DouyinConfig.push] 抖音推送相关配置
  */
 

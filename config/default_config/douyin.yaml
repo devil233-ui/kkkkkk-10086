@@ -21,10 +21,10 @@ sendHDrecord: true
 # 根据「视频拦截阈值」自动选择合适的分辨率，关闭后默认选择最大分辨率进行下载
 autoResolution: true
 
-# 视频信息返回形式，可选值：text、image
+# 作品信息返回形式，覆盖视频、图集、合辑等作品，可选值：text、image
 videoInfoMode: image
 
-# 视频信息展示内容，可选值：cover、title、author、stats
+# 作品信息展示内容，可选值：cover、title、author、stats
 displayContent:
   - cover
   - title

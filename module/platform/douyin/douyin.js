@@ -39,6 +39,37 @@ let img
 
 const getFirstUrl = (data) => data?.url_list?.find(Boolean) || ''
 
+const parseJsonSafely = (text) => {
+  try {
+    return JSON.parse(text || '{}')
+  } catch {
+    return {}
+  }
+}
+
+export const getDouyinWorkCoverUrl = (aweme) => {
+  const videoCover = getFirstUrl(aweme?.video?.animated_cover) ||
+    getFirstUrl(aweme?.video?.dynamic_cover) ||
+    getFirstUrl(aweme?.video?.cover_original_scale) ||
+    getFirstUrl(aweme?.video?.cover) ||
+    getFirstUrl(aweme?.video?.origin_cover)
+  if (videoCover) return videoCover
+
+  const imageUrls = aweme?.images?.[0]?.url_list
+  if (Array.isArray(imageUrls)) return imageUrls[2] || imageUrls[1] || imageUrls[0] || ''
+
+  if (aweme?.article_info) {
+    const feData = parseJsonSafely(aweme.article_info.fe_data)
+    const content = parseJsonSafely(aweme.article_info.article_content)
+    return getFirstUrl(feData?.image_list?.[0]) ||
+      feData?.image_list?.[0]?.url ||
+      getFirstUrl(content?.head_poster_list) ||
+      ''
+  }
+
+  return ''
+}
+
 const formatVideoDuration = (duration) => {
   const seconds = Math.floor((duration || 0) / 1000)
   const minutes = Math.floor(seconds / 60)
@@ -260,7 +291,7 @@ export class DouYin extends Base {
           let FPS
           const sendvideofile = true
           let video = null
-          let cover = ''
+          const cover = getDouyinWorkCoverUrl(awemeDetail)
           if (this.is_mp4 && (Config.douyin.douyinTip)?.includes('视频')) {
             // 视频地址特殊判断：play_addr_h264、play_addr、
             video = VideoData.data.aweme_detail.video
@@ -282,22 +313,23 @@ export class DouYin extends Base {
             if (!g_video_url) {
               g_video_url = `https://aweme.snssdk.com/aweme/v1/play/?video_id=${video.play_addr.uri}&ratio=1080p&line=0`
             }
-            cover = getFirstUrl(video.animated_cover) || getFirstUrl(video.dynamic_cover) || getFirstUrl(video.cover_original_scale) || getFirstUrl(video.cover) || getFirstUrl(video.origin_cover)
-
             const title = VideoData.data.aweme_detail.preview_title.substring(0, 80).replace(/[\\/:\*\?"<>\|\r\n]/g, ' ') // video title
             g_title = title
             mp4size = (video.bit_rate[0].play_addr.data_size / (1024 * 1024)).toFixed(2)
             logger.info('视频地址', `https://aweme.snssdk.com/aweme/v1/play/?video_id=${VideoData.data.aweme_detail.video.play_addr.uri}&ratio=1080p&line=0`)
           }
 
-          if (this.is_mp4 && (Config.douyin.douyinTip)?.includes('视频')) {
+          const shouldSendWorkInfo = this.is_mp4
+            ? (Config.douyin.douyinTip)?.includes('视频')
+            : (Config.douyin.douyinTip)?.includes('图集')
+          if (shouldSendWorkInfo) {
             const aweme = VideoData.data.aweme_detail
             const statistics = aweme.statistics || {}
             const displayContent = Config.douyin.displayContent || ['cover', 'title', 'author', 'stats']
             if (Config.douyin.videoInfoMode === 'text') {
               const contentMap = {
-                cover: segment.image(cover),
-                title: `\n标题：${aweme.desc || g_title}\n`,
+                cover: cover ? segment.image(cover) : null,
+                title: `\n标题：${aweme.desc || aweme.preview_title || g_title || '抖音作品'}\n`,
                 author: `\n作者：${aweme.author?.nickname || '无法获取'}\n`,
                 stats: `\n点赞：${Common.count(statistics.digg_count)}\n评论：${Common.count(statistics.comment_count)}\n收藏：${Common.count(statistics.collect_count)}\n分享：${Common.count(statistics.share_count)}`
               }
@@ -316,11 +348,11 @@ export class DouYin extends Base {
                   })
                   userProfile = userProfileData?.data?.user
                 } catch (error) {
-                  logger.warn('[抖音] 获取作者主页信息失败，继续渲染视频信息图', error)
+                  logger.warn('[抖音] 获取作者主页信息失败，继续渲染作品信息图', error)
                 }
               }
               const videoInfoImg = await Render('douyin/videoInfo', {
-                desc: aweme.desc || g_title,
+                desc: aweme.desc || aweme.preview_title || g_title || '抖音作品',
                 aweme_id: aweme.aweme_id,
                 share_url: aweme.share_url,
                 image_url: cover,

@@ -259,7 +259,7 @@ export function supportGuoba() {
         },
         {
           field: 'douyin.videoInfoMode',
-          label: '视频信息返回形式',
+          label: '作品信息返回形式',
           bottomHelpMessage: '选择使用渲染卡片或文本展示作品信息',
           component: 'RadioGroup',
           required: true,
@@ -272,7 +272,7 @@ export function supportGuoba() {
         },
         {
           field: 'douyin.displayContent',
-          label: '视频信息展示内容',
+          label: '作品信息展示内容',
           bottomHelpMessage: '选择解析卡片或文本中展示的内容',
           component: 'Select',
           required: true,
