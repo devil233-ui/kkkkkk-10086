@@ -197,7 +197,7 @@ const DEPRECATED_FIELDS = {
   ],
   bilibili: [
     'switch', 'sendContent', 'numcomment', 'bilibilipush', 'bilibilipushlog',
-    'bilibilipushGroup', 'bilibilipushcron', 'senddynamicvideo', 'push.dynamicTypes'
+    'bilibilipushGroup', 'bilibilipushcron', 'senddynamicvideo'
   ]
 }
 
@@ -206,8 +206,16 @@ const pickFields = (value, fields) => Object.fromEntries(
 )
 
 const getGuobaConfigData = () => Object.fromEntries(
-  Object.entries(CONFIG_FIELDS).map(([name, fields]) => [name, pickFields(Config[name], fields)])
+  Object.entries(CONFIG_FIELDS).map(([name, fields]) => [name, sanitizeGuobaModule(name, pickFields(Config[name], fields))])
 )
+
+const sanitizeGuobaModule = (name, value) => {
+  if (name === 'bilibili' && value.push && typeof value.push === 'object' && !Array.isArray(value.push)) {
+    value.push = { ...value.push }
+    delete value.push.dynamicTypes
+  }
+  return value
+}
 
 const setObjectPath = (target, path, value) => {
   const parts = path.split('.')
@@ -227,13 +235,13 @@ export const normalizeGuobaConfigData = data => {
     if (!key) continue
 
     if (!key.includes('.') && value && typeof value === 'object' && !Array.isArray(value)) {
-      if (CONFIG_FIELDS[key]) updates[key] = pickFields(value, CONFIG_FIELDS[key])
+      if (CONFIG_FIELDS[key]) updates[key] = sanitizeGuobaModule(key, pickFields(value, CONFIG_FIELDS[key]))
       continue
     }
 
     const [filename, ...parts] = key.split('.')
     if (!filename || parts.length === 0 || !CONFIG_FIELDS[filename]?.includes(parts[0])) continue
-    updates[filename] ||= pickFields(Config[filename], CONFIG_FIELDS[filename])
+    updates[filename] ||= sanitizeGuobaModule(filename, pickFields(Config[filename], CONFIG_FIELDS[filename]))
     setObjectPath(updates[filename], parts.join('.'), value)
   }
 

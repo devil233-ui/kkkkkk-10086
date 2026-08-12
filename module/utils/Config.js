@@ -769,20 +769,25 @@ class Cfg {
      * @returns {boolean} 是否写入成功
      */
     saveGuobaConfig(name, value, deprecatedKeys = []) {
-        if (!value || typeof value !== 'object' || Array.isArray(value)) return false
-        const modulePath = `${Version.pluginPath}/config/config/${name}.yaml`
-        if (!fs.existsSync(modulePath)) return false
+        try {
+            if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+            const modulePath = `${Version.pluginPath}/config/config/${name}.yaml`
+            if (!fs.existsSync(modulePath)) return false
 
-        const reader = new YamlReader(modulePath)
-        for (const [key, item] of Object.entries(value)) reader.document.set(key, item)
-        for (const key of deprecatedKeys) {
-            if (key.includes('.')) reader.document.deleteIn(key.split('.'))
-            else reader.document.delete(key)
+            const reader = new YamlReader(modulePath)
+            for (const key of deprecatedKeys) {
+                if (key.includes('.')) reader.document.deleteIn(key.split('.'))
+                else reader.document.delete(key)
+            }
+            for (const [key, item] of Object.entries(value)) reader.document.set(key, item)
+
+            const success = reader.write()
+            if (success) delete this.config[`config.${name}`]
+            return success
+        } catch (error) {
+            logger.error(`[Config] 锅巴配置模块 ${name} 保存失败:`, error)
+            return false
         }
-
-        const success = reader.write()
-        if (success) delete this.config[`config.${name}`]
-        return success
     }
 
     /**
