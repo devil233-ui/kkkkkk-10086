@@ -7,7 +7,8 @@
   "author": "ikenxuan",
   "license": "GPL-3.0-only",
   "scripts": {
-    "fix": "eslint apps/**/*.js --fix && eslint module/**/*.js --fix"
+    "lint": "eslint apps module",
+    "fix": "eslint apps module --fix"
   },
   "dependencies": {
     "@ikenxuan/amagi": "^6.1.3",
