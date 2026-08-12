@@ -71,6 +71,16 @@ export function supportGuoba() {
           }
         },
         {
+          field: 'cookies.xiaohongshu',
+          label: '小红书ck',
+          bottomHelpMessage: '登录 https://www.xiaohongshu.com/ 获取请求头中的 Cookie',
+          component: 'InputPassword',
+          required: false,
+          componentProps: {
+            placeholder: '建议设置'
+          }
+        },
+        {
           component: 'Divider',
           label: '全局配置，修改后没效果就重启',
           componentProps: {
@@ -154,6 +164,63 @@ export function supportGuoba() {
             min: 50,
             max: 200,
             addonAfter: '单位'
+          }
+        },
+        {
+          field: 'app.RemoveWatermark',
+          label: '移除渲染水印',
+          bottomHelpMessage: '关闭后会在渲染图底部添加机器人、插件版本和水印信息',
+          component: 'Switch',
+          required: false
+        },
+        {
+          field: 'app.EmojiReply',
+          label: '表情回应',
+          bottomHelpMessage: '解析过程中添加处理状态表情；适配器不支持时可关闭',
+          component: 'Switch',
+          required: false
+        },
+        {
+          field: 'app.errorLogSendTo',
+          label: '错误报告接收者',
+          bottomHelpMessage: '统一错误处理生成的报告发送范围',
+          component: 'Select',
+          required: false,
+          componentProps: {
+            mode: 'multiple',
+            allowCreate: false,
+            options: [
+              { label: '主人', value: 'master' },
+              { label: '全部主人', value: 'allMasters' },
+              { label: '触发者', value: 'trigger' }
+            ]
+          }
+        },
+        {
+          field: 'app.livePhotoSystem',
+          label: 'Live Photo兼容系统',
+          component: 'RadioGroup',
+          required: false,
+          componentProps: {
+            options: [
+              { label: 'Google', value: 'google' },
+              { label: '小米', value: 'xiaomi' },
+              { label: 'OPPO', value: 'oppo' },
+              { label: '华为 / 荣耀', value: 'huawei_honor' }
+            ]
+          }
+        },
+        {
+          field: 'app.livePhotoMode',
+          label: 'Live Photo发送方式',
+          component: 'RadioGroup',
+          required: false,
+          componentProps: {
+            options: [
+              { label: '视频 + Live Photo', value: 'video_and_livephoto' },
+              { label: '仅视频', value: 'video_only' },
+              { label: '仅 Live Photo', value: 'livephoto_only' }
+            ]
           }
         },
         {
@@ -573,6 +640,69 @@ export function supportGuoba() {
           required: false
         },
         {
+          field: 'bilibili.videoInfoMode',
+          label: 'B站视频信息返回形式',
+          component: 'RadioGroup',
+          required: false,
+          componentProps: {
+            options: [
+              { label: '渲染信息图', value: 'image' },
+              { label: '文本消息', value: 'text' }
+            ]
+          }
+        },
+        {
+          field: 'bilibili.showDanmakuInVideoInfo',
+          label: '信息图展示高频弹幕',
+          component: 'Switch',
+          required: false
+        },
+        {
+          field: 'bilibili.burnDanmaku',
+          label: '默认烧录弹幕',
+          bottomHelpMessage: '需要重新编码视频，耗时较长；也可临时使用“#弹幕解析”',
+          component: 'Switch',
+          required: false
+        },
+        {
+          field: 'bilibili.danmakuArea',
+          label: '弹幕显示区域',
+          component: 'RadioGroup',
+          required: false,
+          componentProps: {
+            options: [
+              { label: '25%', value: 0.25 },
+              { label: '50%', value: 0.5 },
+              { label: '75%', value: 0.75 },
+              { label: '100%', value: 1 }
+            ]
+          }
+        },
+        {
+          field: 'bilibili.danmakuFontSize',
+          label: '弹幕字号',
+          component: 'RadioGroup',
+          required: false,
+          componentProps: {
+            options: [
+              { label: '小', value: 'small' },
+              { label: '中', value: 'medium' },
+              { label: '大', value: 'large' }
+            ]
+          }
+        },
+        {
+          field: 'bilibili.danmakuOpacity',
+          label: '弹幕透明度',
+          component: 'InputNumber',
+          required: false,
+          componentProps: {
+            min: 0,
+            max: 100,
+            addonAfter: '%'
+          }
+        },
+        {
           component: 'Divider',
           label: 'B站推送配置',
           componentProps: {
@@ -839,6 +969,79 @@ export function supportGuoba() {
           }
         },
         {
+          label: '小红书配置',
+          component: 'SOFT_GROUP_BEGIN',
+        },
+        {
+          component: 'Divider',
+          label: '小红书解析配置',
+          componentProps: {
+            orientation: 'left',
+            plain: true
+          }
+        },
+        {
+          field: 'xiaohongshu.switch',
+          label: '小红书解析开关',
+          bottomHelpMessage: '单独开关，受“总开关”影响',
+          component: 'Switch',
+          required: false
+        },
+        {
+          field: 'xiaohongshu.sendContent',
+          label: '小红书发送内容',
+          component: 'Select',
+          required: false,
+          componentProps: {
+            mode: 'multiple',
+            allowCreate: false,
+            options: [
+              { label: '信息图', value: 'info' },
+              { label: '评论图', value: 'comment' },
+              { label: '图片 / Live Photo', value: 'image' },
+              { label: '视频', value: 'video' }
+            ]
+          }
+        },
+        {
+          field: 'xiaohongshu.numcomment',
+          label: '小红书评论数量',
+          component: 'InputNumber',
+          required: false,
+          componentProps: {
+            min: 0,
+            max: 9999,
+            addonAfter: '条'
+          }
+        },
+        {
+          field: 'xiaohongshu.videoQuality',
+          label: '小红书视频画质',
+          component: 'RadioGroup',
+          required: false,
+          componentProps: {
+            options: [
+              { label: '自动根据大小选择', value: 'adapt' },
+              { label: '540P', value: '540p' },
+              { label: '720P', value: '720p' },
+              { label: '1080P', value: '1080p' },
+              { label: '2K', value: '2k' },
+              { label: '4K', value: '4k' }
+            ]
+          }
+        },
+        {
+          field: 'xiaohongshu.maxAutoVideoSize',
+          label: '小红书自动画质体积上限',
+          component: 'InputNumber',
+          required: false,
+          componentProps: {
+            min: 0,
+            max: 9999,
+            addonAfter: 'MB'
+          }
+        },
+        {
           label: '上传配置',
           component: 'SOFT_GROUP_BEGIN',
         },
@@ -928,6 +1131,85 @@ export function supportGuoba() {
             min: 5,
             max: 114514,
             addonAfter: 'MB'
+          }
+        },
+        {
+          field: 'upload.videoSendMode',
+          label: '本地视频发送方式',
+          bottomHelpMessage: '兼容旧版 base64 开关；URL 模式仅在适配器支持时生效',
+          component: 'RadioGroup',
+          required: false,
+          componentProps: {
+            options: [
+              { label: '本地文件', value: 'file' },
+              { label: 'Base64', value: 'base64' },
+              { label: '远端 URL', value: 'url' }
+            ]
+          }
+        },
+        {
+          field: 'upload.imageSendMode',
+          label: '网络图片发送方式',
+          component: 'RadioGroup',
+          required: false,
+          componentProps: {
+            options: [
+              { label: '远端 URL', value: 'url' },
+              { label: '本地文件', value: 'file' },
+              { label: 'Base64', value: 'base64' }
+            ]
+          }
+        },
+        {
+          field: 'upload.downloadMultiThread',
+          label: '多线程分片下载',
+          bottomHelpMessage: '仅对支持 Range 的大文件生效，不支持时自动回退单线程',
+          component: 'Switch',
+          required: false
+        },
+        {
+          field: 'upload.downloadConcurrency',
+          label: '下载并发数',
+          component: 'InputNumber',
+          required: false,
+          componentProps: {
+            min: 2,
+            max: 8,
+            addonAfter: '路'
+          }
+        },
+        {
+          field: 'upload.downloadThrottle',
+          label: '下载限速',
+          component: 'Switch',
+          required: false
+        },
+        {
+          field: 'upload.downloadMaxSpeed',
+          label: '下载速度上限',
+          component: 'InputNumber',
+          required: false,
+          componentProps: {
+            min: 1,
+            max: 1024,
+            addonAfter: 'MB/s'
+          }
+        },
+        {
+          field: 'upload.downloadAutoReduce',
+          label: '断流自动降速',
+          component: 'Switch',
+          required: false
+        },
+        {
+          field: 'upload.downloadMinSpeed',
+          label: '自动降速下限',
+          component: 'InputNumber',
+          required: false,
+          componentProps: {
+            min: 1,
+            max: 1024,
+            addonAfter: 'MB/s'
           }
         },
         {
@@ -1040,6 +1322,7 @@ export function supportGuoba() {
           bilibili: Config.bilibili,
           pushlist: Config.pushlist,
           kuaishou: Config.kuaishou,
+          xiaohongshu: Config.xiaohongshu,
           upload: Config.upload,
           request: Config.request
         }
@@ -1047,9 +1330,9 @@ export function supportGuoba() {
 
       /**
        * 保存配置数据方法（用于前端提交保存）
-       * @param {*} data 
-       * @param {*} param1 
-       * @returns 
+       * @param {*} data
+       * @param {*} param1
+       * @returns
        */
       async setConfigData(data, { Result }) {
         try {

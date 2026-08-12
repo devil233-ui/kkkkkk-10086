@@ -1,7 +1,11 @@
-import { Base, Render, Config, Networks, mergeFile, Common, baseHeaders, downloadFile, uploadFile, downloadVideo } from '../../utils/index.js'
+import { Base, Render, Config, Networks, mergeFile, Common, baseHeaders, downloadFile, uploadFile, downloadVideo, processImageUrl } from '../../utils/index.js'
 import { bilibiliApiUrls, DynamicType, AdditionalType } from '@ikenxuan/amagi'
+import { burnDanmaku } from '../common/danmaku.js'
 import common from '../../../../../lib/common/common.js'
 import { bilibiliComments, checkCk, genParams } from './index.js'
+import { formatBilibiliDynamicText, formatBilibiliVideoDescText, getHotBilibiliDanmaku } from './dynamicText.js'
+import { extractBilibiliArticleImages, formatBilibiliArticleBody } from './article.js'
+import { buildLivePhotoMessages as buildCommonLivePhotoMessages, buildLivePhotoTipMessage } from '../common/livePhoto.js'
 import fs from 'fs'
 
 // ====== 完美复刻 Karin 的阻塞等待上下文 ======
@@ -33,6 +37,17 @@ function waitForReply(e, timeout = 120000) {
 /** @type {import('../../utils/Render.js').ImageData[]} */
 let img
 
+const hasBilibiliContent = legacyKey => (Config.bilibili.bilibiliTip || []).includes(legacyKey)
+
+export const getBilibiliPayload = (response) => response?.data?.data || response?.data || response?.result || response || {}
+export const getBilibiliDurl = (response) => getBilibiliPayload(response)?.durl || []
+export const getBilibiliDash = (response) => getBilibiliPayload(response)?.dash || {}
+export const getBilibiliAcceptDescription = (response) => getBilibiliPayload(response)?.accept_description || []
+export const getBilibiliVideoStream = (response) => {
+  const payload = getBilibiliPayload(response)
+  return payload?.durl?.[0] || payload?.dash?.video?.[0] || null
+}
+
 export class Bilibili extends Base {
     /** @type {*} */
     type
@@ -56,14 +71,16 @@ export class Bilibili extends Base {
     /**
      * @param {*} e
      * @param {*} data
+     * @param {{ forceBurnDanmaku?: boolean }} [options]
      */
-    constructor(e, data) {
+    constructor(e, data, options) {
         super(e)
         this.e = e
         this.isVIP = false
         this.Type = data?.type
         this.islogin = data?.USER?.STATUS === 'isLogin'
         this.downloadfilename = ''
+        this.forceBurnDanmaku = options?.forceBurnDanmaku ?? false
         this.headers = this.headers || {};
         // 使用可选链和空值合并运算符
         this.headers.Referer ||= 'https://www.bilibili.com/'
@@ -270,9 +287,44 @@ export class Bilibili extends Base {
                     this.downloadfilename = (title || "视频").substring(0, 50).replace(/[\\/:*?"<>|\r\n\s]/g, " ");
 
                     const replyContent = [];
-                    if ((Config.bilibili?.bilibiliTip || []).includes("简介")) {
+                    if (hasBilibiliContent('简介')) {
                         let coverUrl = pic || "";
                         if (coverUrl.startsWith("//")) coverUrl = "https:" + coverUrl;
+
+                        if (Config.bilibili.videoInfoMode === 'image') {
+                            const userProfileData = await this.fetchBili('用户主页数据', { host_mid: owner.mid, typeMode: 'strict' }).catch(() => null)
+                            let hotDanmaku = []
+                            if (Config.bilibili.showDanmakuInVideoInfo) {
+                                const duration = infoData.data.data.pages?.[pIndex]?.duration || infoData.data.data.duration
+                                hotDanmaku = getHotBilibiliDanmaku(await this.fetchVideoDanmakuList(targetCid, duration), 20)
+                            }
+                            const card = userProfileData?.data?.data?.card || userProfileData?.data?.card || {}
+                            await this.e.reply(await Render('bilibili/videoInfo', {
+                                share_url: 'https://b23.tv/' + infoData.data.data.bvid,
+                                title,
+                                desc: formatBilibiliVideoDescText(infoData.data.data.desc_v2, desc, { useDarkTheme: Common.useDarkTheme() }),
+                                stat,
+                                stats: {
+                                    view: Common.count(stat.view),
+                                    danmaku: Common.count(stat.danmaku),
+                                    reply: Common.count(stat.reply),
+                                    like: Common.count(stat.like),
+                                    coin: Common.count(stat.coin),
+                                    favorite: Common.count(stat.favorite),
+                                    share: Common.count(stat.share)
+                                },
+                                bvid: infoData.data.data.bvid,
+                                ctime: Common.convertTimestampToDateTime(infoData.data.data.ctime),
+                                pic: coverUrl,
+                                hotDanmaku,
+                                owner: {
+                                    ...owner,
+                                    frame: card.pendant?.image || '',
+                                    name: card.name || owner.name,
+                                    face: card.face || owner.face
+                                }
+                            }))
+                        } else {
 
                         // 1. 将秒数转为 分:秒 格式的视频时长
                         const durationSec = infoData.data.data.duration || 0;
@@ -315,6 +367,7 @@ export class Bilibili extends Base {
                         } else {
                             await this.e.reply("渲染视频卡片失败，正尝试直接获取视频流...");
                         }
+                        }
                     }
 
                     let videoSize = "0.00";
@@ -338,7 +391,7 @@ export class Bilibili extends Base {
                     }
 
                     // 评论图渲染
-                    if ((Config.bilibili?.bilibiliTip || []).includes("评论图")) {
+                    if (hasBilibiliContent('评论图')) {
                         // 🚨 修复 fetchBili 映射失效：直接调用 amagi 最新的 fetchComments 接口
                         const commentsData = await this.amagi.bilibili.fetcher.fetchComments({
                             number: Config.bilibili.bilibilinumcomments,
@@ -366,7 +419,13 @@ export class Bilibili extends Base {
                         }
                     }
 
-                    if ((Config.upload.usefilelimit && Number(videoSize) > Number(Config.upload.filelimit)) && (Config.bilibili?.bilibiliTip || []).includes("视频")) {
+                    let danmakuList = []
+                    if (this.forceBurnDanmaku || Config.bilibili.burnDanmaku) {
+                        const duration = infoData.data.data.pages?.[pIndex]?.duration || infoData.data.data.duration
+                        danmakuList = await this.fetchVideoDanmakuList(targetCid, duration)
+                    }
+
+                    if ((Config.upload.usefilelimit && Number(videoSize) > Number(Config.upload.filelimit)) && hasBilibiliContent('视频')) {
                         await this.e.reply(`设定的最大上传大小为 ${Config.upload.filelimit}MB\n当前解析到的视频大小为 ${Number(videoSize)}MB\n视频太大了，还是去B站看吧~`, { reply: true });
                     } else {
                         if (Config.bilibili.videoQuality !== 0 && Config.bilibili.videoQuality < 64) {
@@ -385,7 +444,9 @@ export class Bilibili extends Base {
                         } else {
                             logger.mark(`[B站解析断点] 成功锁定 DASH 高清流，准备下载！`);
                         }
-                        await this.getvideo({ infoData: infoData.data, playUrlData: finalPlayUrlData });
+                        if (hasBilibiliContent('视频')) {
+                            await this.getvideo({ infoData: infoData.data, playUrlData: finalPlayUrlData, danmakuList });
+                        }
                     }
                     break;
                 }
@@ -572,11 +633,37 @@ export class Bilibili extends Base {
                     switch (dynamicInfo.data.data.item.type) {
                         case DynamicType.DRAW: {
                             const imgArray = [];
-                            for (const img of dynamicInfo.data.data.item.modules.module_dynamic.major.opus.pics) {
-                                if (img?.url) imgArray.push(segment.image(img.url));
+                            const tempFiles = []
+                            let hasGeneratedLivePhoto = false
+                            const pics = dynamicInfo.data.data.item.modules.module_dynamic.major.opus.pics || []
+                            try {
+                                for (const [index, item] of pics.entries()) {
+                                    if (!item?.url) continue
+                                    if (item.live_url) {
+                                        const livePhoto = await buildCommonLivePhotoMessages({
+                                            platform: 'bilibili',
+                                            staticUrl: item.url,
+                                            liveVideoUrl: item.live_url,
+                                            index,
+                                            headers: {
+                                                ...baseHeaders,
+                                                Referer: 'https://www.bilibili.com/'
+                                            }
+                                        })
+                                        tempFiles.push(...livePhoto.tempFiles)
+                                        hasGeneratedLivePhoto = hasGeneratedLivePhoto || livePhoto.generatedLivePhoto
+                                        if (livePhoto.messages.length) imgArray.push(...livePhoto.messages)
+                                        else imgArray.push(segment.image(item.url))
+                                    } else {
+                                        imgArray.push(segment.image(item.url))
+                                    }
+                                }
+                                if (hasGeneratedLivePhoto) imgArray.push(await buildLivePhotoTipMessage())
+                                if (imgArray.length === 1) await this.e.reply(imgArray[0]);
+                                if (imgArray.length > 1) await this.e.reply(['QQBot', 'KOOKBot'].includes(this.botadapter) ? imgArray : await common.makeForwardMsg(this.e, imgArray, '动态图片'));
+                            } finally {
+                                for (const item of tempFiles) await Common.removeFile(item.filepath, true)
                             }
-                            if (imgArray.length === 1) await this.e.reply(imgArray[0]);
-                            if (imgArray.length > 1) await this.e.reply(['QQBot', 'KOOKBot'].includes(this.botadapter) ? imgArray : await common.makeForwardMsg(this.e, imgArray, '动态图片'));
 
                             const summary = dynamicInfo.data.data.item.modules.module_dynamic.major.opus.summary;
                             const text = replacetext(br(summary?.text || ''), summary?.rich_text_nodes || []);
@@ -716,6 +803,65 @@ export class Bilibili extends Base {
                             await this.e.reply(img);
                             break;
                         }
+                        case DynamicType.ARTICLE: {
+                            const item = dynamicInfo.data.data.item
+                            const articleIdValue = item.basic?.rid_str ||
+                                item.basic?.rid?.toString?.() ||
+                                item.modules?.module_dynamic?.major?.article?.id?.toString?.()
+                            const articleId = articleIdValue ? String(articleIdValue) : ''
+                            if (!articleId) {
+                                await this.e.reply('该专栏动态缺少专栏 ID，暂时无法解析')
+                                break
+                            }
+
+                            const [articleInfoBase, articleInfo] = await Promise.all([
+                                this.amagi.getBilibiliData('专栏文章基本信息', { id: articleId, typeMode: 'strict' }),
+                                this.amagi.getBilibiliData('专栏正文内容', { id: articleId, typeMode: 'strict' })
+                            ])
+                            const articleData = articleInfoBase?.data?.data || articleInfoBase?.data || {}
+                            const articleContent = articleInfo?.data?.data || articleInfo?.data || {}
+                            const articleImages = extractBilibiliArticleImages(articleContent)
+                            const processedImages = await Promise.all(articleImages.map((url, index) => processImageUrl(url, articleData.title || 'B站专栏图片', index, {
+                                Referer: 'https://www.bilibili.com/',
+                                Cookie: Config.cookies.bilibili || ''
+                            })))
+                            const imageMessages = processedImages.filter(Boolean).map(url => segment.image(url))
+                            if (imageMessages.length === 1) await this.e.reply(imageMessages[0])
+                            if (imageMessages.length > 1) await this.e.reply(await common.makeForwardMsg(this.e, imageMessages, '专栏图片'))
+
+                            const stats = articleData.stats || {}
+                            const shareUrl = articleContent.dyn_id_str
+                                ? `https://www.bilibili.com/opus/${articleContent.dyn_id_str}`
+                                : `https://www.bilibili.com/read/cv${articleContent.id || articleId}`
+                            const categories = Array.isArray(articleData.categories)
+                                ? articleData.categories.map(category => category?.name || category).filter(Boolean)
+                                : []
+                            await this.e.reply(await Render('bilibili/dynamic/DYNAMIC_TYPE_ARTICLE', {
+                                username: checkvip(userProfileData.data.data.card),
+                                avatar_url: userProfileData.data.data.card.face,
+                                frame: item.modules.module_author.pendant?.image || '',
+                                create_time: item.modules.module_author.pub_time || Common.convertTimestampToDateTime(item.modules.module_author.pub_ts),
+                                title: articleData.title || item.modules.module_dynamic?.major?.article?.title || 'B站专栏',
+                                summary: articleData.summary || '',
+                                banner_url: articleData.banner_url || articleData.image_urls?.[0] || '',
+                                categories,
+                                words: articleData.words || 0,
+                                body: formatBilibiliArticleBody(articleContent, { useDarkTheme: Common.useDarkTheme() }),
+                                view: Common.count(stats.view),
+                                like: Common.count(stats.like),
+                                favorite: Common.count(stats.favorite),
+                                reply: Common.count(stats.reply),
+                                share: Common.count(stats.dynamic || stats.share),
+                                render_time: Common.getCurrentTime(),
+                                share_url: shareUrl,
+                                dynamicTYPE: '专栏动态解析',
+                                user_shortid: userProfileData.data.data.card.mid,
+                                total_favorited: Common.count(userProfileData.data.data.like_num),
+                                following_count: Common.count(userProfileData.data.data.card.attention),
+                                fans: Common.count(userProfileData.data.data.follower)
+                            }))
+                            break
+                        }
                     }
                     break;
                 }
@@ -756,13 +902,59 @@ export class Bilibili extends Base {
     }
 
     /**
+     * 获取B站视频弹幕列表
+     * @param {number|string} cid 视频cid
+     * @param {number} duration 视频时长，单位秒
+     * @returns {Promise<Array<{progress:number, mode:number, fontsize:number, color:number, content:string}>>}
+     */
+    async fetchVideoDanmakuList(cid, duration) {
+        try {
+            if (!cid) return []
+            const xml = await new Networks({
+                url: `https://comment.bilibili.com/${cid}.xml`,
+                headers: {
+                    ...baseHeaders,
+                    Referer: 'https://www.bilibili.com/',
+                    Cookie: Config.cookies.bilibili || ''
+                }
+            }).getData()
+            const text = typeof xml === 'string' ? xml : String(xml)
+            const list = []
+            const regex = /<d\s+p="([^"]+)">([\s\S]*?)<\/d>/g
+            let match
+            while ((match = regex.exec(text))) {
+                const p = match[1].split(',')
+                const seconds = Number(p[0] || 0)
+                if (duration && seconds > duration) continue
+                list.push({
+                    progress: Math.max(0, seconds * 1000),
+                    mode: Number(p[1] || 1),
+                    fontsize: Number(p[2] || 25),
+                    color: Number(p[3] || 16777215),
+                    content: match[2]
+                        .replace(/&lt;/g, '<')
+                        .replace(/&gt;/g, '>')
+                        .replace(/&amp;/g, '&')
+                        .replace(/&quot;/g, '"')
+                        .replace(/&#39;/g, "'")
+                })
+            }
+            logger.debug(`[B站] 获取到 ${list.length} 条弹幕`)
+            return list
+        } catch (error) {
+            logger.warn('[B站] 获取弹幕失败，将发送原视频', error)
+            return []
+        }
+    }
+
+    /**
      * 获取视频并处理的方法
      * @param {Object} videoData - 视频数据对象
      * @param {import('@ikenxuan/amagi').BiliBangumiVideoInfo | import('@ikenxuan/amagi').BiliOneWork} [videoData.infoData] - 视频信息数据
      * @param {import('@ikenxuan/amagi').BiliVideoPlayurlIsLogin | import('@ikenxuan/amagi').BiliBiliVideoPlayurlNoLogin | import('@ikenxuan/amagi').BiliBangumiVideoPlayurlIsLogin | import('@ikenxuan/amagi').BiliBangumiVideoPlayurlNoLogin} [videoData.playUrlData] - 播放URL数据
      * @returns {Promise<void>}
      */
-    async getvideo({ infoData, playUrlData }) {
+    async getvideo({ infoData, playUrlData, danmakuList = [] }) {
         logger.mark("[B站解析] 开始提取视频流...");
         if (Config.bilibili.videopriority === true) this.islogin = false;
 
@@ -808,8 +1000,21 @@ export class Bilibili extends Base {
                             await Common.removeFile(bmp3.filepath, true);
                             return true;
                         }
+                        let sourcePath = resultPath
+                        if ((this.forceBurnDanmaku || Config.bilibili.burnDanmaku) && danmakuList.length > 0) {
+                            const burnPath = Common.tempDri.video + `Bil_Danmaku_${Date.now()}.mp4`
+                            const ok = await burnDanmaku('bilibili', resultPath, danmakuList, burnPath, {
+                                danmakuArea: Config.bilibili.danmakuArea,
+                                danmakuFontSize: Config.bilibili.danmakuFontSize,
+                                danmakuOpacity: Config.bilibili.danmakuOpacity
+                            })
+                            if (ok) {
+                                await Common.removeFile(resultPath, true)
+                                sourcePath = burnPath
+                            }
+                        }
                         const filePath = Common.tempDri.video + `${Config.app.removeCache ? "tmp_" + Date.now() : this.downloadfilename}.mp4`;
-                        fs.renameSync(resultPath, filePath);
+                        fs.renameSync(sourcePath, filePath);
                         await Common.removeFile(bmp4.filepath, true);
                         await Common.removeFile(bmp3.filepath, true);
 
@@ -837,6 +1042,23 @@ export class Bilibili extends Base {
                 Referer: "https://www.bilibili.com",
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             };
+            if ((this.forceBurnDanmaku || Config.bilibili.burnDanmaku) && danmakuList.length > 0) {
+                const videoFile = await downloadFile(durlUrl, { title: `Bil_V_tmp_${Date.now()}.mp4`, headers: fallbackHeaders })
+                if (videoFile?.filepath) {
+                    const resultPath = Common.tempDri.video + `Bil_Danmaku_${Date.now()}.mp4`
+                    const ok = await burnDanmaku('bilibili', videoFile.filepath, danmakuList, resultPath, {
+                        danmakuArea: Config.bilibili.danmakuArea,
+                        danmakuFontSize: Config.bilibili.danmakuFontSize,
+                        danmakuOpacity: Config.bilibili.danmakuOpacity
+                    })
+                    await Common.removeFile(videoFile.filepath, true)
+                    if (ok) {
+                        const totalBytes = fs.statSync(resultPath).size
+                        await uploadFile(this.e, { filepath: resultPath, totalBytes, originTitle: this.downloadfilename }, '')
+                        return
+                    }
+                }
+            }
             await downloadVideo(this.e, { video_url: durlUrl, title: { timestampTitle: `tmp_${Date.now()}.mp4`, originTitle: `${this.downloadfilename}.mp4` }, headers: fallbackHeaders });
         }
     }
@@ -1075,7 +1297,6 @@ function mapping_table(type) {
 
 /**
  * @param {import ('@ikenxuan/amagi').BiliDynamicInfo<DynamicType>} dynamicINFO 
- * @param {import ('@ikenxuan/amagi').BiliDynamicCard} dynamicInfoCard 
  * @returns 
  */
 const oid = (dynamicINFO, dynamicInfoCard) => {

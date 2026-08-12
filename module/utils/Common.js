@@ -1,4 +1,5 @@
 import { join, sep } from 'node:path'
+import path from 'node:path'
 import Version from './Version.js'
 import Config from './Config.js'
 import { Base } from './Base.js'
@@ -17,6 +18,60 @@ class Tools {
       /** 图片缓存文件 */
       images: join(defaultPath, 'kkkdownload', 'images') + sep
     }
+    this.videoPreviews = new Map()
+  }
+
+  /**
+   * 注册可通过本地 API 服务预览的视频文件。
+   * @param {string} filePath 视频绝对路径
+   * @param {boolean} [removeCache=Config.app.removeCache] 是否会自动删除
+   * @param {number} [ttlMs=10 * 60 * 1000] 预览有效期
+   * @returns {{filename:string,filePath:string,removeCache:boolean,createdAt:number,expireAt?:number}}
+   */
+  registerVideoPreview(filePath, removeCache = Config.app.removeCache, ttlMs = 10 * 60 * 1000) {
+    const filename = path.basename(filePath)
+    const createdAt = Date.now()
+    const info = {
+      filename,
+      filePath,
+      removeCache: Boolean(removeCache),
+      createdAt,
+      expireAt: removeCache ? createdAt + ttlMs : undefined
+    }
+    this.videoPreviews.set(filename, info)
+    return info
+  }
+
+  /** @param {string} filename */
+  getVideoPreview(filename) {
+    return this.videoPreviews.get(path.basename(filename))
+  }
+
+  /** @param {string} filename */
+  markVideoPreviewRemoved(filename) {
+    const safeName = path.basename(filename)
+    const info = this.videoPreviews.get(safeName)
+    if (!info) return
+    info.removedAt = Date.now()
+    this.videoPreviews.set(safeName, info)
+  }
+
+  /**
+   * 仅允许访问插件视频缓存目录中的文件。
+   * @param {string} filename 文件名
+   * @returns {string|null}
+   */
+  validateVideoRequest(filename) {
+    if (!filename) return null
+    const safeName = path.basename(filename)
+    if (safeName !== filename || filename.includes('/') || filename.includes('\\')) return null
+
+    const previewInfo = this.getVideoPreview(safeName)
+    const videoPath = previewInfo?.filePath || path.join(this.tempDri.video, safeName)
+    const resolvedVideoDir = path.resolve(this.tempDri.video)
+    const resolvedPath = path.resolve(videoPath)
+    if (!resolvedPath.startsWith(resolvedVideoDir + path.sep) && resolvedPath !== resolvedVideoDir) return null
+    return fs.existsSync(resolvedPath) ? resolvedPath : null
   }
 
   /**

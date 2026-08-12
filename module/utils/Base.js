@@ -1,4 +1,6 @@
 import Client, { bilibiliErrorCodeMap } from '@ikenxuan/amagi'
+import { getBilibiliData as fetchBilibiliData } from '../platform/bilibili/api.js'
+import { getDouyinData as fetchDouyinData } from '../platform/douyin/api.js'
 import { Networks, baseHeaders } from './Networks.js'
 import { mergeFile } from './FFmpeg.js'
 import cfg from '../../../../lib/config/config.js'
@@ -7,6 +9,25 @@ import Version from './Version.js'
 import Config from './Config.js'
 import Common from './Common.js'
 import fs from 'fs'
+
+const buildApiErrorImage = async (platform, method, err) => {
+  const error = err?.error || err?.data || {}
+  return await Render('other/handlerError', {
+    type: 'business_error',
+    platform,
+    method,
+    timestamp: new Date().toLocaleString('zh-CN', { hour12: false }),
+    frameworkVersion: Version.BotVersion,
+    pluginVersion: Version.version,
+    triggerCommand: error.requestUrl || error.request_url || '',
+    error: {
+      name: error.name || error.errorCode || error.code || 'APIError',
+      message: error.message || error.errorDescription || err?.message || 'API 请求失败',
+      stack: error.stack || error.amagiMessage || '',
+      businessName: method
+    }
+  })
+}
 
 /**
  * 统计每个平台使用最多的机器人 ID 和使用次数
@@ -24,6 +45,7 @@ import fs from 'fs'
  * @property {Object} [activeOption] 主动消息参数
  * @property {string} activeOption.uin 机器人账号
  * @property {string} activeOption.group_id 群号
+ * @property {boolean} [forceLocal] 是否强制下载到本地后发送
  */
 
 /**
@@ -99,7 +121,8 @@ export class Base {
       cookies: {
         douyin: Config.cookies.douyin,
         bilibili: Config.cookies.bilibili,
-        kuaishou: Config.cookies.kuaishou
+        kuaishou: Config.cookies.kuaishou,
+        xiaohongshu: Config.cookies.xiaohongshu
       },
       request: {
         timeout: Config.request?.timeout || 15000,
@@ -116,7 +139,11 @@ export class Base {
     // 使用Proxy包装amagi客户端
     this.amagi = new Proxy(client, {
       get(/** @type {ReturnType<typeof Client>} */ target, /** @type {keyof ReturnType<typeof Client>} */ prop) {
-        const method = target[prop]
+        const method = prop === 'getBilibiliData'
+          ? fetchBilibiliData
+          : prop === 'getDouyinData'
+            ? fetchDouyinData
+            : target[prop]
         if (typeof method === 'function') {
           return async (/** @type {any} */ ...args) => {
             const result = await Function.prototype.apply.call(method, target, args)
@@ -131,7 +158,7 @@ export class Base {
             if (prop === 'getDouyinData' && (result.code !== 200)) {
               /** @type {import('@ikenxuan/amagi').ApiResponse<import('@ikenxuan/amagi').APIErrorType<'douyin'>>} */
               const err = result
-              const img = await Render('apiError/index', err.error)
+              const img = await buildApiErrorImage('douyin', String(prop), err)
               if (Object.keys(e).length === 0) {
                 await sendMasterMessage('douyin', img)
                 throw new Error(err.message)
@@ -144,7 +171,18 @@ export class Base {
             if (prop === 'getBilibiliData' && result.code in bilibiliErrorCodeMap) {
               /** @type {import('@ikenxuan/amagi').ApiResponse<import('@ikenxuan/amagi').APIErrorType<'bilibili'>>} */
               const err = result
-              const img = await Render('apiError/index', err.error)
+              const voucher = err?.data?.data?.v_voucher || err?.error?.data?.data?.v_voucher
+              if (err.code === -352 && voucher && Object.keys(e).length !== 0) {
+                const riskError = new Error(err.message || 'B站风控验证')
+                Object.assign(riskError, {
+                  code: err.code,
+                  platform: 'bilibili',
+                  data: err.data || err.error,
+                  rawError: err
+                })
+                throw riskError
+              }
+              const img = await buildApiErrorImage('bilibili', String(prop), err)
               if (Object.keys(e).length === 0) {
                 await sendMasterMessage('bilibili', img)
                 throw new Error(err.message)
@@ -347,6 +385,32 @@ const sendMasterMessage = async (platform, img) => {
 }
 
 /**
+ * 直接发送远端视频地址。
+ * @param {*} e 消息事件
+ * @param {string} videoUrl 视频直链
+ * @param {uploadFileOptions} [options] 上传参数
+ * @returns {Promise<boolean>}
+ */
+const sendVideoUrl = async (e, videoUrl, options) => {
+  if (!videoUrl) return false
+  const isActiveMessage = options?.active && options?.activeOption
+  const target = isActiveMessage && options?.activeOption?.uin
+    ? Bot?.[options.activeOption.uin]?.pickGroup(options.activeOption.group_id)
+    : e.isGroup ? e.group : e.friend
+
+  try {
+    const videoMessage = segment.video(videoUrl)
+    const status = isActiveMessage
+      ? await target?.sendMsg(videoMessage || videoUrl)
+      : await e.reply(videoMessage || videoUrl)
+    return !!status?.message_id
+  } catch (error) {
+    logger.warn(`视频URL发送失败，回退本地下载上传: ${error instanceof Error ? error.message : String(error)}`)
+    return false
+  }
+}
+
+/**
  * 上传视频文件
  * @param {*} e 消息事件
  * @param {fileInfo} file 包含本地视频文件信息的对象
@@ -408,12 +472,14 @@ export const uploadFile = async (e, file, videoUrl, options) => {
 
   // 文件处理
   let File
-  if (Config.upload.sendbase64 && !useGroupFile) {
+  const useBase64Video = Config.upload.videoSendMode === 'base64' || Config.upload.sendbase64
+  if (useBase64Video && !useGroupFile) {
     File = `base64://${fs.readFileSync(file.filepath).toString('base64')}`
     logger.mark(`已开启base64转换...`)
   } else {
     File = useGroupFile ? file.filepath : `file://${file.filepath}`
   }
+  Common.registerVideoPreview(file.filepath, Boolean(Config.app.removeCache))
 
   try {
     const msgType = isActiveMessage ? '主动' : '被动'
@@ -480,6 +546,13 @@ export const downloadVideo = async (e, downloadOpt, uploadOpt) => {
     return false
   }
 
+  const botAdapter = new Base(e).botadapter
+  const canSendRemoteVideo = downloadOpt.video_url && !uploadOpt?.forceLocal && !Config.upload.compress && (botAdapter === 'QQBot' || Config.upload.videoSendMode === 'url')
+  if (canSendRemoteVideo && await sendVideoUrl(e, downloadOpt.video_url, uploadOpt)) {
+    logger.mark(`视频大小 (${fileSizeInMB} MB) 已通过URL发送，跳过本地下载`)
+    return true
+  }
+
   // 下载文件
   let res = await downloadFile(downloadOpt.video_url, {
     title: Config.app.removeCache ? (downloadOpt.title.timestampTitle || 'temp') : processFilename(downloadOpt.title.originTitle || 'video', 50),
@@ -492,7 +565,6 @@ export const downloadVideo = async (e, downloadOpt, uploadOpt) => {
   res.totalBytes = Number((res.totalBytes / (1024 * 1024)).toFixed(2))
 
   // 视频大小判断
-  const botAdapter = new Base(e).botadapter
   const useGroupFile = res.totalBytes > (['LagrangeCore', 'Lagrange.OneBot', 'OneBotv11', 'OneBot11', 'ICQQ'].includes(botAdapter) ? 102 : 75)
   // 上传视频
   return await uploadFile(e, res, downloadOpt.video_url, { ...uploadOpt, useGroupFile })

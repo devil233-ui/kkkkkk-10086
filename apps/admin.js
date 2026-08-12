@@ -48,6 +48,10 @@ const KuaiShouType = {
   快手评论数量: 'kuaishounumcomments'
 }
 
+const XiaohongshuType = {
+  小红书解析开关: 'switch'
+}
+
 const UploadType = {
   发送视频base64: 'sendbase64',
   视频上传拦截: 'usefilelimit',
@@ -84,6 +88,8 @@ const NumberCfgType = {
   抖音评论数量: { type: 'douyin', key: 'numcomments', limit: '1-50' },
   B站评论数量: { type: 'bilibili', key: 'bilibilinumcomments', limit: '1-20' },
   快手评论数量: { type: 'kuaishou', key: 'kuaishounumcomments', limit: '1-30' },
+  小红书评论数量: { type: 'xiaohongshu', key: 'numcomment', limit: '1-50' },
+  小红书自动画质大小: { type: 'xiaohongshu', key: 'maxAutoVideoSize', limit: '1-200' },
   渲染精度: { type: 'app', key: 'renderScale', limit: '50-200' },
   优先级: { type: 'app', key: 'priority', limit: '0-10000' },
   API服务端口: { type: 'app', key: 'APIServerPort', limit: '1000-65535' },
@@ -104,6 +110,7 @@ const SwitchCfgType = {
   ...DouYinType,
   ...BilibiliType,
   ...KuaiShouType,
+  ...XiaohongshuType,
   ...UploadType,
   ...RequestType
 }
@@ -113,6 +120,7 @@ const FileWitch = {
   douyin: DouYinType,
   bilibili: BilibiliType,
   kuaishou: KuaiShouType,
+  xiaohongshu: XiaohongshuType,
   upload: UploadType,
   request: RequestType
 }
@@ -157,6 +165,11 @@ export class kkkAdmin extends plugin {
         {
           reg: /^#?(kkk)?\s*设置快手ck$/i,
           fnc: 'setksck',
+          permission: 'master'
+        },
+        {
+          reg: /^#?(kkk)?\s*设置小红书ck$/i,
+          fnc: 'setxhsck',
           permission: 'master'
         },
         {
@@ -298,6 +311,8 @@ export class kkkAdmin extends plugin {
       ...mapPushConfig('bilibili', _cfg.bilibili.push),
       // Kuaishou
       ...Object.fromEntries(Object.keys(_cfg.kuaishou).map(k => [k, getStatus(_cfg.kuaishou[k])])),
+      // Xiaohongshu
+      ...Object.fromEntries(Object.keys(_cfg.xiaohongshu).map(k => [`xiaohongshu_${k}`, getStatus(_cfg.xiaohongshu[k])])),
       // Upload
       ...Object.fromEntries(Object.keys(_cfg.upload).map(k => [k, getStatus(_cfg.upload[k])])),
       // Request
@@ -360,6 +375,19 @@ export class kkkAdmin extends plugin {
     Config.modify('cookies', 'kuaishou', String(this.e.msg))
     this.reply('设置成功！')
     this.finish('saveksck')
+    return true
+  }
+
+  async setxhsck() {
+    this.setContext('savexhsck')
+    this.reply('请在120秒内发送小红书ck')
+    return true
+  }
+
+  async savexhsck() {
+    Config.modify('cookies', 'xiaohongshu', String(this.e.msg))
+    this.reply('设置成功！')
+    this.finish('savexhsck')
     return true
   }
 }

@@ -1,16 +1,21 @@
 import { KuaiShou, getKuaishouID, KuaishouData } from '../module/platform/kuaishou/index.js'
 import { Bilibili, getBilibiliID } from '../module/platform/bilibili/index.js'
 import { DouYin, extractDouyinUrl, getDouyinID } from '../module/platform/douyin/index.js'
-import { Config, Common, UploadRecord } from '../module/utils/index.js'
+import { Xiaohongshu, getXiaohongshuID } from '../module/platform/xiaohongshu/index.js'
+import { Config, Common, UploadRecord, wrapWithErrorHandler } from '../module/utils/index.js'
+import { getStatisticsDB } from '../module/db/index.js'
 import { getDouyinData } from '../module/platform/douyin/api.js'
 import { QRCodeScanner } from '../module/utils/QRCodeScanner.js';
 
 // 用户状态存储对象
 const user = {}
 
+const isVideoToolEnabled = () => Config.app?.videotool !== false
+const isDefaultTool = () => Config.app?.defaulttool !== false
+
 const PLATFORM_CONFIG = [
   {
-    reg: /.*((www|v|jx|jingxuan|m)\.(douyin|iesdouyin)\.com|douyin\.com\/(video|note)).*/,
+    reg: /.*((www|v|jx|jingxuan|m)\.(douyin|iesdouyin)\.com|douyin\.com\/(video|note)).*/i,
     handler: 'douyin',
     enabled: Config.douyin?.douyintool
   },
@@ -23,6 +28,11 @@ const PLATFORM_CONFIG = [
     reg: /^((.*)快手(.*)快手(.*)|(.*)v\.kuaishou(.*)|(.*)kuaishou\.com\/f\/[a-zA-Z0-9]+.*)$/,
     handler: 'kuaishou',
     enabled: Config.kuaishou?.kuaishoutool
+  },
+  {
+    reg: /(xiaohongshu\.com|xhslink\.com)/i,
+    handler: 'xiaohongshu',
+    enabled: Config.xiaohongshu?.switch
   }
 ]
 
@@ -30,11 +40,22 @@ const PLATFORM_CONFIG = [
  * 动态生成插件规则
  * @returns {Array} 返回启用的平台规则数组
  */
-const generateRules = () => Config.app.videotool
+const generateRules = () => isVideoToolEnabled()
   ? PLATFORM_CONFIG
     .filter(config => config.enabled)
     .map(({ reg, handler }) => ({ reg, fnc: handler }))
   : []
+
+const recordParseStatistics = async (e, platform) => {
+  const groupId = String(e.group_id || e.groupId || 'private')
+  const userId = String(e.user_id || e.userId || e.sender?.user_id || e.sender?.userId || 'unknown')
+  try {
+    const statisticsDB = await getStatisticsDB()
+    await statisticsDB?.recordParse(groupId, userId, platform)
+  } catch (error) {
+    logger.error('[统计] 记录解析统计失败', error)
+  }
+}
 
 export class kkkTools extends plugin {
   constructor() {
@@ -42,10 +63,10 @@ export class kkkTools extends plugin {
       name: 'kkkkkk-10086-视频功能',
       dsc: '视频',
       event: 'message',
-      priority: Config.app.defaulttool ? -Infinity : Config.app.priority,
+      priority: isDefaultTool() ? -Infinity : Config.app.priority,
       rule: [
         ...generateRules(), // 动态生成的平台规则
-        { reg: /^#?(解析|kkk解析)/, fnc: 'prefix' }, // 解析功能规则
+        { reg: /^#?(解析|kkk解析|弹幕解析)/, fnc: 'prefix' }, // 解析功能规则
         { reg: /#?BGM(\d+)/, fnc: 'uploadRecord' }, // BGM上传功能规则
         { reg: /^#?第(\d{1,3})集$/, fnc: 'next' } // 选集功能规则
       ]
@@ -59,8 +80,10 @@ export class kkkTools extends plugin {
    */
   async prefix(e) {
     try {
+      const forceBurnDanmaku = /^#?弹幕解析/.test(e.msg || '')
       // ====== 1. 先尝试获取文本内容 ======
       e.msg = await Common.getReplyMessage(e) || e.msg;
+      e.forceBurnDanmaku = forceBurnDanmaku
 
       // ====== 2. 检查文本中是否已经包含有效链接 ======
       let matchedConfig = PLATFORM_CONFIG.find(config => config.reg.test(e.msg));
@@ -161,16 +184,26 @@ export class kkkTools extends plugin {
     return true;
   }
 
+  async runWithErrorHandler(e, businessName, fn) {
+    const handler = wrapWithErrorHandler(async event => fn.call(this, event), { businessName, plugin: this })
+    return await handler(e)
+  }
+
   /**
    * 处理抖音链接解析
    * @param {any} e 事件对象
    * @returns {Promise<boolean>} 处理结果
    */
   async douyin(e) {
+    return await this.runWithErrorHandler(e, '抖音视频解析', this._douyin)
+  }
+
+  async _douyin(e) {
     const url = extractDouyinUrl(e.msg)
     if (url) {
       const iddata = await getDouyinID(url)
       await new DouYin(e, iddata).RESOURCES(iddata)
+      await recordParseStatistics(e, 'douyin')
     }
     return true
   }
@@ -181,6 +214,11 @@ export class kkkTools extends plugin {
    * @returns {Promise<boolean>} 处理结果
    */
   async bilibili(e) {
+    return await this.runWithErrorHandler(e, 'B站视频解析', this._bilibili)
+  }
+
+  async _bilibili(e) {
+    const forceBurnDanmaku = Boolean(e.forceBurnDanmaku) || /^#?弹幕解析/.test(e.msg)
     let url = (e.msg || (e.message?.[0]?.data || '')).replaceAll('\\', '').trim()
 
     // 处理不同类型的B站链接
@@ -198,7 +236,8 @@ export class kkkTools extends plugin {
     }
 
     const iddata = await getBilibiliID(url)
-    await new Bilibili(e, iddata).RESOURCES(iddata)
+    await new Bilibili(e, iddata, { forceBurnDanmaku }).RESOURCES(iddata)
+    await recordParseStatistics(e, 'bilibili')
 
     // 记录用户操作状态，用于选集功能
     user[e.user_id] = 'bilib'
@@ -216,6 +255,28 @@ export class kkkTools extends plugin {
     const Iddata = await getKuaishouID(url)
     const WorkData = await new KuaishouData(Iddata.type).GetData({ photoId: Iddata.id })
     await new KuaiShou(e, Iddata).Action(WorkData)
+    return true
+  }
+
+  /**
+   * 处理小红书链接解析
+   * @param {any} e 事件对象
+   * @returns {Promise<boolean>} 处理结果
+   */
+  async xiaohongshu(e) {
+    return await this.runWithErrorHandler(e, '小红书笔记解析', this._xiaohongshu)
+  }
+
+  async _xiaohongshu(e) {
+    const url = e.msg.replaceAll('\\', '').match(/https?:\/\/[^\s"'<>]+/i)?.[0]
+    if (!url) {
+      logger.warn(`未能在消息中找到有效的小红书链接: ${e.msg}`)
+      return true
+    }
+
+    const iddata = await getXiaohongshuID(url)
+    await new Xiaohongshu(e, iddata).XiaohongshuHandler(iddata)
+    await recordParseStatistics(e, 'xiaohongshu')
     return true
   }
 

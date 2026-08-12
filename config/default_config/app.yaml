@@ -24,3 +24,19 @@ APIServer: false
 
 # API服务端口
 APIServerPort: 4567
+
+# 渲染图片是否移除底部版本信息
+RemoveWatermark: false
+
+# 表情回应，若适配器或对应平台不支持需要关闭
+EmojiReply: true
+
+# 遇到错误时谁会收到错误日志？可选值：master、allMasters、trigger
+errorLogSendTo:
+  - master
+
+# Live Photo 兼容系统，可选值：google、xiaomi、oppo、huawei_honor
+livePhotoSystem: oppo
+
+# Live Photo 发送方式，可选值：video_and_livephoto、video_only、livephoto_only
+livePhotoMode: video_and_livephoto
