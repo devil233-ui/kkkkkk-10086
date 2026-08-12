@@ -1,7 +1,4 @@
 # 快手解析开关，单独开关，受「总开关」影响
-kuaishoutool: true
-
-# 快手解析开关（新项目配置名，兼容 kuaishoutool）
 switch: true
 
 # 快手评论解析（新项目配置名）
@@ -11,7 +8,4 @@ comment: true
 kuaishoutip: true
 
 # 快手评论数量，范围1~30条
-kuaishounumcomments: 5
-
-# 快手评论数量（新项目配置名，兼容 kuaishounumcomments）
 numcomment: 5

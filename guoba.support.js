@@ -21,6 +21,13 @@ const input = (field, label, bottomHelpMessage = '', component = 'Input') => ({
   required: false
 })
 
+const password = (field, label, bottomHelpMessage) => ({
+  ...input(field, label, bottomHelpMessage, 'InputPassword'),
+  componentProps: {
+    placeholder: '留空则保持现有 Cookie 不变'
+  }
+})
+
 const sw = (field, label, bottomHelpMessage = '') => ({
   field,
   label,
@@ -158,6 +165,7 @@ const pushFilterSchemas = [
 ]
 
 const CONFIG_FIELDS = {
+  cookies: ['douyin', 'bilibili', 'kuaishou', 'xiaohongshu'],
   app: [
     'videotool', 'defaulttool', 'priority', 'parseTip', 'EmojiReply', 'removeCache',
     'sendforwardmsg', 'fakeForward', 'errorLogSendTo', 'Theme', 'renderScale',
@@ -177,7 +185,7 @@ const CONFIG_FIELDS = {
     'loginPerm', 'imageLayout', 'videoInfoMode', 'showDanmakuInVideoInfo', 'burnDanmaku',
     'danmakuArea', 'danmakuFontSize', 'danmakuOpacity', 'verticalMode', 'videoCodec', 'push'
   ],
-  kuaishou: ['kuaishoutool', 'switch', 'comment', 'kuaishoutip', 'kuaishounumcomments', 'numcomment'],
+  kuaishou: ['switch', 'comment', 'kuaishoutip', 'numcomment'],
   xiaohongshu: ['switch', 'sendContent', 'numcomment', 'videoQuality', 'maxAutoVideoSize'],
   upload: [
     'sendbase64', 'videoSendMode', 'usefilelimit', 'filelimit', 'compress',
@@ -198,7 +206,8 @@ const DEPRECATED_FIELDS = {
   bilibili: [
     'switch', 'sendContent', 'numcomment', 'bilibilipush', 'bilibilipushlog',
     'bilibilipushGroup', 'bilibilipushcron', 'senddynamicvideo'
-  ]
+  ],
+  kuaishou: ['kuaishoutool', 'kuaishounumcomments']
 }
 
 const pickFields = (value, fields) => Object.fromEntries(
@@ -206,7 +215,12 @@ const pickFields = (value, fields) => Object.fromEntries(
 )
 
 const getGuobaConfigData = () => Object.fromEntries(
-  Object.entries(CONFIG_FIELDS).map(([name, fields]) => [name, sanitizeGuobaModule(name, pickFields(Config[name], fields))])
+  Object.entries(CONFIG_FIELDS).map(([name, fields]) => [
+    name,
+    name === 'cookies'
+      ? Object.fromEntries(fields.map(field => [field, '']))
+      : sanitizeGuobaModule(name, pickFields(Config[name], fields))
+  ])
 )
 
 const sanitizeGuobaModule = (name, value) => {
@@ -215,6 +229,17 @@ const sanitizeGuobaModule = (name, value) => {
     delete value.push.dynamicTypes
   }
   return value
+}
+
+const normalizeCookieUpdates = value => {
+  const updates = {}
+  for (const field of CONFIG_FIELDS.cookies) {
+    const cookie = typeof value?.[field] === 'string' ? value[field].trim() : ''
+    if (!cookie) continue
+    if (!/(?:^|;\s*)[^=;\s]+=[^;]*/.test(cookie)) throw new Error(`${field} Cookie 格式无效`)
+    updates[field] = cookie
+  }
+  return updates
 }
 
 const setObjectPath = (target, path, value) => {
@@ -235,12 +260,22 @@ export const normalizeGuobaConfigData = data => {
     if (!key) continue
 
     if (!key.includes('.') && value && typeof value === 'object' && !Array.isArray(value)) {
-      if (CONFIG_FIELDS[key]) updates[key] = sanitizeGuobaModule(key, pickFields(value, CONFIG_FIELDS[key]))
+      if (key === 'cookies') {
+        const cookieUpdates = normalizeCookieUpdates(value)
+        if (Object.keys(cookieUpdates).length) updates.cookies = cookieUpdates
+      } else if (CONFIG_FIELDS[key]) {
+        updates[key] = sanitizeGuobaModule(key, pickFields(value, CONFIG_FIELDS[key]))
+      }
       continue
     }
 
     const [filename, ...parts] = key.split('.')
     if (!filename || parts.length === 0 || !CONFIG_FIELDS[filename]?.includes(parts[0])) continue
+    if (filename === 'cookies') {
+      const cookieUpdates = normalizeCookieUpdates({ [parts[0]]: value })
+      if (Object.keys(cookieUpdates).length) updates.cookies = { ...(updates.cookies || {}), ...cookieUpdates }
+      continue
+    }
     updates[filename] ||= sanitizeGuobaModule(filename, pickFields(Config[filename], CONFIG_FIELDS[filename]))
     setObjectPath(updates[filename], parts.join('.'), value)
   }
@@ -321,6 +356,12 @@ const bilibiliPushListSchema = {
 
 const schemas = [
   group('基础配置'),
+  divider('Cookie 配置'),
+  password('cookies.douyin', '抖音 Cookie', '留空保存不会修改；也可使用扫码登录或 #kkk设置抖音ck'),
+  password('cookies.bilibili', 'B站 Cookie', '留空保存不会修改；登录后可获得更高视频画质'),
+  password('cookies.kuaishou', '快手 Cookie', '留空保存不会修改'),
+  password('cookies.xiaohongshu', '小红书 Cookie', '留空保存不会修改'),
+
   divider('全局开关'),
   sw('app.videotool', '总开关', '视频解析工具总开关，修改后重启生效'),
   sw('app.defaulttool', '默认解析', '识别最高优先级，修改后重启生效'),
@@ -465,11 +506,9 @@ const schemas = [
 
   group('快手配置'),
   divider('快手解析'),
-  sw('kuaishou.kuaishoutool', '快手解析开关（旧版键）', '受总开关影响'),
   sw('kuaishou.switch', '快手解析开关', '受总开关影响'),
   sw('kuaishou.comment', '快手评论解析'),
   sw('kuaishou.kuaishoutip', '快手解析提示'),
-  num('kuaishou.kuaishounumcomments', '快手评论数量（旧版键）', 0, 30, '条'),
   num('kuaishou.numcomment', '快手评论数量', 0, 30, '条'),
 
   group('小红书配置'),

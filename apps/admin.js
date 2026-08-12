@@ -43,9 +43,9 @@ const BilibiliType = {
 }
 
 const KuaiShouType = {
-  快手解析开关: 'kuaishoutool',
+  快手解析开关: 'switch',
   快手解析提示: 'kuaishoutip',
-  快手评论数量: 'kuaishounumcomments'
+  快手评论数量: 'numcomment'
 }
 
 const XiaohongshuType = {
@@ -87,7 +87,7 @@ const QualityMap = {
 const NumberCfgType = {
   抖音评论数量: { type: 'douyin', key: 'numcomments', limit: '1-50' },
   B站评论数量: { type: 'bilibili', key: 'bilibilinumcomments', limit: '1-20' },
-  快手评论数量: { type: 'kuaishou', key: 'kuaishounumcomments', limit: '1-30' },
+  快手评论数量: { type: 'kuaishou', key: 'numcomment', limit: '1-30' },
   小红书评论数量: { type: 'xiaohongshu', key: 'numcomment', limit: '1-50' },
   小红书自动画质大小: { type: 'xiaohongshu', key: 'maxAutoVideoSize', limit: '1-200' },
   渲染精度: { type: 'app', key: 'renderScale', limit: '50-200' },

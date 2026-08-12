@@ -134,9 +134,10 @@ const APP_UPLOAD_KEYS = [
 
 /**
  * @typedef {Object} KuaishouConfig
- * @property {boolean} [KuaishouConfig.kuaishoutool] 快手解析开关
+ * @property {boolean} [KuaishouConfig.switch] 快手解析开关
+ * @property {boolean} [KuaishouConfig.comment] 快手评论解析开关
  * @property {boolean} [KuaishouConfig.kuaishoutip] 快手解析提示开关
- * @property {number} [KuaishouConfig.kuaishounumcomments] 快手评论数量
+ * @property {number} [KuaishouConfig.numcomment] 快手评论数量
  */
 
 /**

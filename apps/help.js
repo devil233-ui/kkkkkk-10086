@@ -5,7 +5,7 @@ const buildHelpMenu = (role) => {
   const platformNames = []
   if (ConfigSafe('douyin')?.douyintool) platformNames.push('抖音')
   if (ConfigSafe('bilibili')?.bilibilitool) platformNames.push('哔哩哔哩')
-  if (ConfigSafe('kuaishou')?.kuaishoutool) platformNames.push('快手')
+  if (ConfigSafe('kuaishou')?.switch) platformNames.push('快手')
   if (ConfigSafe('xiaohongshu')?.switch) platformNames.push('小红书')
 
   const groups = [

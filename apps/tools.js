@@ -28,7 +28,7 @@ const PLATFORM_CONFIG = [
   {
     reg: /^((.*)快手(.*)快手(.*)|(.*)v\.kuaishou(.*)|(.*)kuaishou\.com\/f\/[a-zA-Z0-9]+.*)$/,
     handler: 'kuaishou',
-    enabled: getConfigValue(Config.kuaishou?.switch, Config.kuaishou?.kuaishoutool)
+    enabled: Config.kuaishou?.switch
   },
   {
     reg: /(xiaohongshu\.com|xhslink\.com)/i,
