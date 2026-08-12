@@ -63,7 +63,9 @@ export const embedWatermark = async (image, watermarkText) => {
     if (!embedWatermarkToPngBytes) return null
     const pngBuffer = isPng(input) ? input : await sharp(input).png().toBuffer()
     const result = embedWatermarkToPngBytes(pngBuffer, watermarkText)
-    return Buffer.isBuffer(result) ? result : Buffer.from(result)
+    const output = result?.buffer ?? result
+    if (Buffer.isBuffer(output)) return output
+    return output instanceof Uint8Array ? Buffer.from(output) : null
   } catch (error) {
     logWarn(`[Render] 嵌入隐水印失败: ${error instanceof Error ? error.message : String(error)}`)
     return null

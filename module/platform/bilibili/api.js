@@ -46,5 +46,18 @@ export const getBilibiliData = async (method, arg1, arg2) => {
   }
 
   const { cookie, options } = normalizeArgs(arg1, arg2)
-  return await bilibiliFetcher[fetcherMethod](options, cookie, buildRequestConfig())
+  const result = await bilibiliFetcher[fetcherMethod](options, cookie, buildRequestConfig())
+  const voucher = result?.data?.data?.v_voucher || result?.data?.v_voucher || result?.error?.data?.data?.v_voucher
+  if (Number(result?.code) === -352 && voucher) {
+    const error = new Error(result.message || result.msg || `B站接口返回错误码 ${result.code}`)
+    Object.assign(error, {
+      code: result.code,
+      platform: 'bilibili',
+      data: result.data || result.error,
+      rawError: result,
+      method
+    })
+    throw error
+  }
+  return result
 }

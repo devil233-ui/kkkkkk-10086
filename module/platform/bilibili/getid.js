@@ -1,5 +1,5 @@
 import { baseHeaders, Networks } from '../../utils/index.js'
-import amagi from '@ikenxuan/amagi'
+import { getBilibiliData } from './api.js'
 
 /**
  * @typedef {Object.<string, any>} BilibiliId
@@ -102,9 +102,10 @@ export const getBilibiliID = async (url, log = true) => {
           if (bvid && bvid.toLowerCase().startsWith("av")) {
             const avid = parseInt(bvid.replace(/^av/i, ""));
             try {
-              const convertResult = await amagi.bilibiliFetcher.convertAvToBv({ avid, typeMode: "strict" });
+              const convertResult = await getBilibiliData('AV转BV', { avid, typeMode: 'strict' })
               bvid = convertResult.data.data.bvid;
             } catch (e) {
+              if (Number(e?.code) === -352) throw e
               logger.error("[B站解析] AV转BV失败", e);
             }
           }
@@ -211,6 +212,7 @@ export const getBilibiliID = async (url, log = true) => {
       }
     }
   } catch (error) {
+    if (Number(error?.code) === -352) throw error
     logger.error(`[B站链接] 解析失败:`, error)
   }
   

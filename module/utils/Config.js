@@ -79,7 +79,6 @@ const APP_UPLOAD_KEYS = [
  * @property {string} [permission] 谁可以设置推送
  * @property {string} [cron] 推送定时任务的cron表达式
  * @property {boolean} [parsedynamic] 推送时是否一同解析该动态
- * @property {BilibiliDynamicPushType[]} [dynamicTypes] 要推送的动态类型，留空数组则不推送任何类型
  * @property {boolean} [log] 是否打印日志
  * @property {number} [pushVideoQuality] 推送时视频画质偏好设置
  * @property {number} [pushMaxAutoVideoSize] 推送时视频体积上限
@@ -107,6 +106,7 @@ const APP_UPLOAD_KEYS = [
  * @property {string} short_id - 抖音号，与sec_uid二选一
  * @property {string[]} group_id - 推送群号和机器人账号，多个则使用逗号隔开，必填。如：群号1:机器人账号1
  * @property {string} remark - 博主或UP主的名字信息，可不填
+ * @property {('post'|'live')[]} [pushTypes] - 推送类型：作品、直播
  * @property {'blacklist'|'whitelist'} [filterMode='blacklist'] - 黑名单：命中不推送；白名单：命中才推送
  * @property {string[]} [Keywords] - 指定关键词
  * @property {string[]} [Tags] - 指定标签
@@ -119,15 +119,11 @@ const APP_UPLOAD_KEYS = [
  * @property {number} host_mid - B站用户的UID，必填
  * @property {string[]} group_id - 推送群号和机器人账号，多个则使用逗号隔开，必填。如：群号1:机器人账号1
  * @property {string} [remark] - 博主或UP主的名字信息，可不填
- * @property {BilibiliDynamicPushType[]} [dynamicTypes] - 推送动态类型，未配置则继承全局配置
+ * @property {('video'|'draw'|'word'|'live'|'forward'|'article')[]} [pushTypes] - 推送类型：视频、图文、纯文、直播、转发、专栏
+ * @property {boolean|('视频'|'图文'|'video'|'draw')[]} [parsedynamic] - 是否在推送卡片后继续发送作品内容，未配置时继承全局设置
  * @property {'blacklist'|'whitelist'} [filterMode='blacklist'] - 黑名单：命中不推送；白名单：命中才推送
  * @property {string[]} [Keywords] - 指定关键词
  * @property {string[]} [Tags] - 指定标签
- */
-
-/**
- * B站已支持推送的动态类型
- * @typedef {'视频'|'图文'|'文字'|'转发'|'直播'} BilibiliDynamicPushType
  */
 
 /**

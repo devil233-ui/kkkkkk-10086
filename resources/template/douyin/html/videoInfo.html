@@ -4,9 +4,7 @@
 {{/block}} {{block 'main'}}
 <div class="douyin-video-page">
   <div class="ambient">
-    {{if image_url}}
     <img src="{{image_url}}" alt="" />
-    {{/if}}
   </div>
 
   <header class="topbar">
@@ -17,7 +15,7 @@
     <div class="aweme-id">{{aweme_id}}</div>
   </header>
 
-  {{if showCover && image_url}}
+  {{if showCover}}
   <section class="cover-section">
     <img class="cover" src="{{image_url}}" alt="封面" />
     {{if video && video.duration}}

@@ -25,7 +25,7 @@ export const normalizeDouyinMessage = (message) => {
  */
 export const extractDouyinUrl = (message) => {
   const normalized = normalizeDouyinMessage(message)
-  const matches = [...normalized.matchAll(/https?:\/\/(?:www\.|v\.|jx\.|m\.|jingxuan\.)?(?:douyin\.com|iesdouyin\.com)\/[^\s"'<>\\}\]]+/gi)]
+  const matches = [...normalized.matchAll(/https?:\/\/(?:www\.|v\.|jx\.|m\.|jingxuan\.|live\.)?(?:douyin\.com|iesdouyin\.com)\/[^\s"'<>\\}\]]+/gi)]
     .map(match => match[0].replace(/[),，。！？…]+$/, ''))
 
   if (matches.length === 0) return ''

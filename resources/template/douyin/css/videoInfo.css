@@ -62,9 +62,9 @@ body.dark-mode .container {
 .brand {
   align-items: center;
   display: flex;
+  gap: 28px;
   font-size: 42px;
   font-weight: 700;
-  gap: 28px;
 }
 
 .logo {
