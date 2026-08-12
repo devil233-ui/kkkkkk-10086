@@ -29,6 +29,13 @@ const buildApiErrorImage = async (platform, method, err) => {
   })
 }
 
+const canReplyToEvent = e => typeof e?.reply === 'function'
+
+const getApiErrorMessage = err => {
+  const error = err?.error || err?.data || {}
+  return error.errorDescription || error.message || error.amagiMessage || err?.message || 'API 请求失败'
+}
+
 /**
  * 统计每个平台使用最多的机器人 ID 和使用次数
  * @typedef {Object} PlatformBotStats
@@ -159,12 +166,14 @@ export class Base {
               /** @type {import('@ikenxuan/amagi').ApiResponse<import('@ikenxuan/amagi').APIErrorType<'douyin'>>} */
               const err = result
               const img = await buildApiErrorImage('douyin', String(prop), err)
-              if (Object.keys(e).length === 0) {
-                await sendMasterMessage('douyin', img)
-                throw new Error(err.message)
+              if (!canReplyToEvent(e)) {
+                await sendMasterMessage('douyin', img).catch(error => {
+                  logger.warn(`抖音推送错误通知主人失败: ${error instanceof Error ? error.message : String(error)}`)
+                })
+              } else {
+                await e.reply(img)
               }
-              await e.reply(img)
-              throw new Error(err.message)
+              throw new Error(getApiErrorMessage(err))
             }
 
             // 检查哔哩哔哩数据返回结构
@@ -172,7 +181,7 @@ export class Base {
               /** @type {import('@ikenxuan/amagi').ApiResponse<import('@ikenxuan/amagi').APIErrorType<'bilibili'>>} */
               const err = result
               const voucher = err?.data?.data?.v_voucher || err?.error?.data?.data?.v_voucher
-              if (err.code === -352 && voucher && Object.keys(e).length !== 0) {
+              if (err.code === -352 && voucher && canReplyToEvent(e)) {
                 const riskError = new Error(err.message || 'B站风控验证')
                 Object.assign(riskError, {
                   code: err.code,
@@ -183,12 +192,14 @@ export class Base {
                 throw riskError
               }
               const img = await buildApiErrorImage('bilibili', String(prop), err)
-              if (Object.keys(e).length === 0) {
-                await sendMasterMessage('bilibili', img)
-                throw new Error(err.message)
+              if (!canReplyToEvent(e)) {
+                await sendMasterMessage('bilibili', img).catch(error => {
+                  logger.warn(`B站推送错误通知主人失败: ${error instanceof Error ? error.message : String(error)}`)
+                })
+              } else {
+                await e.reply(img)
               }
-              await e.reply(img)
-              throw new Error(err.message)
+              throw new Error(getApiErrorMessage(err))
             }
             return result
           }
