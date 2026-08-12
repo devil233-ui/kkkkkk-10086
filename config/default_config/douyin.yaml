@@ -1,9 +1,6 @@
 # 抖音解析开关，单独开关，受「总开关」影响
 douyintool: true
 
-# 抖音解析开关（新项目配置名，兼容 douyintool）
-switch: true
-
 # 抖音解析可选
 douyinTip:
   - 提示信息
@@ -12,18 +9,8 @@ douyinTip:
   - 背景音乐
   - 图集
 
-# 解析时发送的内容（新项目配置名）
-# 可选值：info、comment、video
-sendContent:
-  - info
-  - comment
-  - video
-
 # 抖音评论数量，范围1~无限条
 numcomments: 5
-
-# 抖音评论数量（新项目配置名，兼容 numcomments）
-numcomment: 5
 
 # 次级评论请求数量
 subCommentLimit: 5

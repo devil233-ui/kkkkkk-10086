@@ -1,9 +1,6 @@
 # B站解析开关，单独开关，受「总开关」影响
 bilibilitool: true
 
-# B站解析开关（新项目配置名，兼容 bilibilitool）
-switch: true
-
 # B站解析可选列表
 bilibiliTip:
   - 提示信息
@@ -12,18 +9,8 @@ bilibiliTip:
   - 视频
   - 动态
 
-# 解析时发送的内容（新项目配置名）
-# 可选值：info、comment、video
-sendContent:
-  - info
-  - video
-  - comment
-
 # B站评论数量，设置接口返回的评论数量，范围1~无限条
 bilibilinumcomments: 5
-
-# B站评论数量（新项目配置名，兼容 bilibilinumcomments）
-numcomment: 5
 
 # 评论图是否显示真实评论数量，关闭则显示解析到的评论数量
 realCommentCount: false

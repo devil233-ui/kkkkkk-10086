@@ -762,6 +762,30 @@ class Cfg {
     }
 
     /**
+     * 保存锅巴面板中的单个配置模块，并在同一次写入中移除已废弃字段。
+     * @param {keyof ConfigType} name 配置文件名
+     * @param {Record<string, any>} value 经过白名单过滤的配置对象
+     * @param {string[]} deprecatedKeys 需要删除的历史字段路径
+     * @returns {boolean} 是否写入成功
+     */
+    saveGuobaConfig(name, value, deprecatedKeys = []) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+        const modulePath = `${Version.pluginPath}/config/config/${name}.yaml`
+        if (!fs.existsSync(modulePath)) return false
+
+        const reader = new YamlReader(modulePath)
+        for (const [key, item] of Object.entries(value)) reader.document.set(key, item)
+        for (const key of deprecatedKeys) {
+            if (key.includes('.')) reader.document.deleteIn(key.split('.'))
+            else reader.document.delete(key)
+        }
+
+        const success = reader.write()
+        if (success) delete this.config[`config.${name}`]
+        return success
+    }
+
+    /**
      * 同步pushlist配置到数据库
      * @returns {Promise<void>}
      */

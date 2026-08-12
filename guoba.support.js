@@ -21,13 +21,6 @@ const input = (field, label, bottomHelpMessage = '', component = 'Input') => ({
   required: false
 })
 
-const password = (field, label, bottomHelpMessage) => ({
-  ...input(field, label, bottomHelpMessage, 'InputPassword'),
-  componentProps: {
-    placeholder: '建议配置'
-  }
-})
-
 const sw = (field, label, bottomHelpMessage = '') => ({
   field,
   label,
@@ -164,6 +157,89 @@ const pushFilterSchemas = [
   tags('Tags', '指定标签', '需开启过滤模式')
 ]
 
+const CONFIG_FIELDS = {
+  app: [
+    'videotool', 'defaulttool', 'priority', 'parseTip', 'EmojiReply', 'removeCache',
+    'sendforwardmsg', 'fakeForward', 'errorLogSendTo', 'Theme', 'renderScale',
+    'RemoveWatermark', 'RenderWaitTime', 'multiPageRender', 'multiPageHeight',
+    'livePhotoSystem', 'livePhotoMode', 'APIServer', 'APIServerPort', 'APIServerMount'
+  ],
+  douyin: [
+    'douyintool', 'douyinTip', 'numcomments', 'subCommentLimit', 'subCommentDepth', 'realCommentCount',
+    'commentImageCollection', 'sendHDrecord', 'autoResolution', 'liveImageMergeMode',
+    'textMode', 'videoQuality', 'maxAutoVideoSize', 'loginPerm', 'videoInfoMode',
+    'displayContent', 'burnDanmaku', 'danmakuArea', 'danmakuFontSize', 'danmakuOpacity',
+    'verticalMode', 'videoCodec', 'push'
+  ],
+  bilibili: [
+    'bilibilitool', 'bilibiliTip', 'displayContent', 'videopriority', 'videoQuality',
+    'maxAutoVideoSize', 'bilibilinumcomments', 'realCommentCount', 'commentImageCollection',
+    'loginPerm', 'imageLayout', 'videoInfoMode', 'showDanmakuInVideoInfo', 'burnDanmaku',
+    'danmakuArea', 'danmakuFontSize', 'danmakuOpacity', 'verticalMode', 'videoCodec', 'push'
+  ],
+  kuaishou: ['kuaishoutool', 'switch', 'comment', 'kuaishoutip', 'kuaishounumcomments', 'numcomment'],
+  xiaohongshu: ['switch', 'sendContent', 'numcomment', 'videoQuality', 'maxAutoVideoSize'],
+  upload: [
+    'sendbase64', 'videoSendMode', 'usefilelimit', 'filelimit', 'compress',
+    'compresstrigger', 'compressvalue', 'usegroupfile', 'groupfilevalue', 'imageSendMode',
+    'downloadMultiThread', 'downloadConcurrency', 'downloadThrottle', 'downloadMaxSpeed',
+    'downloadAutoReduce', 'downloadMinSpeed'
+  ],
+  request: ['timeout', 'User-Agent', 'proxy'],
+  pushlist: ['douyin', 'bilibili']
+}
+
+const DEPRECATED_FIELDS = {
+  app: ['videoTool', 'usefilelimit', 'filelimit', 'rmmp4'],
+  douyin: [
+    'switch', 'sendContent', 'numcomment', 'commentsimg', 'detailMusic', 'douyinpush',
+    'douyinpushlog', 'douyinpushGroup', 'douyinpushcron', 'senddynamicwork'
+  ],
+  bilibili: [
+    'switch', 'sendContent', 'numcomment', 'bilibilipush', 'bilibilipushlog',
+    'bilibilipushGroup', 'bilibilipushcron', 'senddynamicvideo', 'push.dynamicTypes'
+  ]
+}
+
+const pickFields = (value, fields) => Object.fromEntries(
+  fields.filter(key => Object.prototype.hasOwnProperty.call(value || {}, key)).map(key => [key, value[key]])
+)
+
+const getGuobaConfigData = () => Object.fromEntries(
+  Object.entries(CONFIG_FIELDS).map(([name, fields]) => [name, pickFields(Config[name], fields)])
+)
+
+const setObjectPath = (target, path, value) => {
+  const parts = path.split('.')
+  const last = parts.pop()
+  let current = target
+  for (const part of parts) {
+    if (!current[part] || typeof current[part] !== 'object' || Array.isArray(current[part])) current[part] = {}
+    current = current[part]
+  }
+  current[last] = value
+}
+
+export const normalizeGuobaConfigData = data => {
+  const updates = {}
+
+  for (const [key, value] of Object.entries(data || {})) {
+    if (!key) continue
+
+    if (!key.includes('.') && value && typeof value === 'object' && !Array.isArray(value)) {
+      if (CONFIG_FIELDS[key]) updates[key] = pickFields(value, CONFIG_FIELDS[key])
+      continue
+    }
+
+    const [filename, ...parts] = key.split('.')
+    if (!filename || parts.length === 0 || !CONFIG_FIELDS[filename]?.includes(parts[0])) continue
+    updates[filename] ||= pickFields(Config[filename], CONFIG_FIELDS[filename])
+    setObjectPath(updates[filename], parts.join('.'), value)
+  }
+
+  return updates
+}
+
 const douyinPushListSchema = {
   field: 'pushlist.douyin',
   label: '抖音推送列表',
@@ -237,15 +313,8 @@ const bilibiliPushListSchema = {
 
 const schemas = [
   group('基础配置'),
-  divider('Cookie 配置'),
-  password('cookies.douyin', '抖音 Cookie', '登录 https://www.douyin.com/ 获取请求头中的 Cookie，或使用 #kkk设置抖音ck 查看教程'),
-  password('cookies.bilibili', 'B站 Cookie', '不设置时视频画质通常受限，登录 https://www.bilibili.com/ 获取请求头中的 Cookie'),
-  password('cookies.kuaishou', '快手 Cookie', '登录 https://www.kuaishou.com/new-reco 获取请求头中的 Cookie'),
-  password('cookies.xiaohongshu', '小红书 Cookie', '登录 https://www.xiaohongshu.com/ 获取请求头中的 Cookie'),
-
   divider('全局开关'),
   sw('app.videotool', '总开关', '视频解析工具总开关，修改后重启生效'),
-  sw('app.videoTool', '总开关（新版键）', '兼容 Karin 新配置名，建议与总开关保持一致'),
   sw('app.defaulttool', '默认解析', '识别最高优先级，修改后重启生效'),
   num('app.priority', '解析优先级', 0, 114514, '', '默认解析关闭后生效，修改后重启生效'),
   sw('app.parseTip', '解析提示', '发送“检测到链接，开始解析”提示'),
@@ -289,18 +358,15 @@ const schemas = [
 
   group('抖音配置'),
   divider('抖音解析'),
-  sw('douyin.douyintool', '抖音解析开关（旧版键）', '受总开关影响'),
-  sw('douyin.switch', '抖音解析开关', '受总开关影响'),
-  select('douyin.douyinTip', '抖音解析选项（旧版键）', [
+  sw('douyin.douyintool', '抖音解析开关', '受总开关影响'),
+  select('douyin.douyinTip', '抖音解析选项', [
     option('提示信息'),
     option('背景音乐'),
     option('评论图'),
     option('视频'),
     option('图集')
   ], '', true),
-  select('douyin.sendContent', '发送内容', sendContentOptions.filter(item => item.value !== 'image'), '', true),
-  num('douyin.numcomments', '评论解析数量（旧版键）', 0, 9999, '条'),
-  num('douyin.numcomment', '评论解析数量', 0, 9999, '条'),
+  num('douyin.numcomments', '评论解析数量', 0, 9999, '条'),
   num('douyin.subCommentLimit', '次级评论请求数量', 0, 100, '条'),
   num('douyin.subCommentDepth', '次级评论嵌套深度', 0, 10, '层'),
   sw('douyin.realCommentCount', '显示真实评论数量'),
@@ -344,22 +410,19 @@ const schemas = [
 
   group('哔哩哔哩'),
   divider('B站解析'),
-  sw('bilibili.bilibilitool', 'B站解析开关（旧版键）', '受总开关影响'),
-  sw('bilibili.switch', 'B站解析开关', '受总开关影响'),
-  select('bilibili.bilibiliTip', 'B站解析选项（旧版键）', [
+  sw('bilibili.bilibilitool', 'B站解析开关', '受总开关影响'),
+  select('bilibili.bilibiliTip', 'B站解析选项', [
     option('提示信息'),
     option('简介'),
     option('评论图'),
     option('视频'),
     option('动态')
   ], '', true),
-  select('bilibili.sendContent', '发送内容', sendContentOptions.filter(item => item.value !== 'image'), '', true),
   select('bilibili.displayContent', '简介显示内容', displayContentOptions, '', true),
   sw('bilibili.videopriority', '优先保内容', '开启后优先保证上传成功，可能降低分辨率'),
   radio('bilibili.videoQuality', '视频画质偏好', bilibiliQualityOptions),
   num('bilibili.maxAutoVideoSize', '自动画质最大视频大小', 0, 9999, 'MB'),
-  num('bilibili.bilibilinumcomments', '评论解析数量（旧版键）', 0, 9999, '条'),
-  num('bilibili.numcomment', '评论解析数量', 0, 9999, '条'),
+  num('bilibili.bilibilinumcomments', '评论解析数量', 0, 9999, '条'),
   sw('bilibili.realCommentCount', '显示真实评论数量'),
   sw('bilibili.commentImageCollection', '收集评论区图片'),
   radio('bilibili.loginPerm', '扫码登录权限', permissionOptions),
@@ -469,35 +532,17 @@ export function supportGuoba() {
     configInfo: {
       schemas,
       getConfigData() {
-        return {
-          cookies: Config.cookies,
-          app: Config.app,
-          douyin: Config.douyin,
-          bilibili: Config.bilibili,
-          pushlist: Config.pushlist,
-          kuaishou: Config.kuaishou,
-          xiaohongshu: Config.xiaohongshu,
-          upload: Config.upload,
-          request: Config.request
-        }
+        return getGuobaConfigData()
       },
       async setConfigData(data, { Result }) {
         try {
           const touched = new Set()
 
-          for (const [key, value] of Object.entries(data || {})) {
-            if (!key) continue
-
-            if (!key.includes('.') && value && typeof value === 'object' && !Array.isArray(value)) {
-              Config.ModifyPro(key, value)
-              touched.add(key)
-              continue
+          for (const [name, value] of Object.entries(normalizeGuobaConfigData(data))) {
+            if (!Config.saveGuobaConfig(name, value, DEPRECATED_FIELDS[name])) {
+              throw new Error(`配置模块 ${name} 保存失败`)
             }
-
-            const [filename, ...parts] = key.split('.')
-            if (!filename || parts.length === 0) continue
-            Config.modify(filename, parts.join('.'), value)
-            touched.add(filename)
+            touched.add(name)
           }
 
           if (touched.has('pushlist')) await Config.syncConfigToDatabase()
