@@ -35,8 +35,9 @@ export class BilibiliDBBase {
       await this.createTables()
       logger.debug('[BilibiliDB] 数据库模型同步成功')
       logger.debug('[BilibiliDB] 正在同步配置订阅...')
-      logger.debug('[BilibiliDB] 配置项数量:', Config.pushlist.bilibili?.length || 0)
-      await this.syncConfigSubscriptions(Config.pushlist.bilibili || [])
+      const pushList = Config.pushlist?.bilibili
+      logger.debug('[BilibiliDB] 配置项数量:', Array.isArray(pushList) ? pushList.length : '不可用')
+      await this.syncConfigSubscriptions(pushList)
       logger.debug('[BilibiliDB] 配置订阅同步成功')
       logger.debug(logger.green('--------------------------[BilibiliDB] 初始化数据库完成--------------------------'))
     } catch (error) {
@@ -467,20 +468,136 @@ export class BilibiliDBBase {
   }
 
   /**
+   * 构建配置中的B站订阅集合，并拒绝可能导致误删的残缺配置。
+   * @param {bilibiliPushItem[]} configItems 配置文件中的订阅项
+   * @returns {{configSubscriptions: Map<string, Set<string>>, invalidItems: number[], emptyConfig: boolean}}
+   */
+  buildConfigSubscriptionMap(configItems) {
+    const configSubscriptions = new Map()
+    const invalidItems = []
+    if (!Array.isArray(configItems)) return { configSubscriptions, invalidItems: [0], emptyConfig: false }
+
+    for (const [index, item] of configItems.entries()) {
+      const hostMid = item?.host_mid
+      const groups = item?.group_id
+      const parsedynamic = item?.parsedynamic
+      const validParseConfig = !Object.hasOwn(item || {}, 'parsedynamic') || typeof parsedynamic === 'boolean' || (
+        Array.isArray(parsedynamic) && parsedynamic.every(type => ['视频', '图文', 'video', 'draw'].includes(type))
+      )
+      if (hostMid === undefined || hostMid === null || String(hostMid).trim() === '' || !Array.isArray(groups) || groups.length === 0 || !validParseConfig) {
+        invalidItems.push(index)
+        continue
+      }
+
+      const groupIds = []
+      let invalid = false
+      for (const groupWithBot of groups) {
+        if (typeof groupWithBot !== 'string') {
+          invalid = true
+          break
+        }
+        const parts = groupWithBot.split(':').map(value => value.trim())
+        const [groupId, botId] = parts
+        if (parts.length !== 2 || !groupId || !botId) {
+          invalid = true
+          break
+        }
+        groupIds.push(groupId)
+      }
+      if (invalid) {
+        invalidItems.push(index)
+        continue
+      }
+
+      for (const groupId of groupIds) {
+        if (!configSubscriptions.has(groupId)) configSubscriptions.set(groupId, new Set())
+        configSubscriptions.get(groupId).add(String(hostMid))
+      }
+    }
+    return { configSubscriptions, invalidItems, emptyConfig: configItems.length === 0 }
+  }
+
+  /**
+   * 只读预览配置同步将删除的订阅和去重缓存。
+   * @param {bilibiliPushItem[]} configItems 配置文件中的订阅项
+   * @returns {Promise<{configSubscriptions: Map<string, Set<string>>, invalidItems: number[], emptyConfig: boolean, removedSubscriptions: {groupId: string, host_mid: number}[], removedCaches: number, removedUsers: number}>}
+   */
+  async previewConfigSubscriptionSync(configItems) {
+    const { configSubscriptions, invalidItems, emptyConfig } = this.buildConfigSubscriptionMap(configItems)
+    if (invalidItems.length > 0) return { configSubscriptions, invalidItems, emptyConfig, removedSubscriptions: [], removedCaches: 0, removedUsers: 0 }
+
+    const removedSubscriptions = []
+    let removedCaches = 0
+    const allGroups = await this.allQuery('SELECT * FROM Groups')
+    for (const group of allGroups) {
+      const groupId = group.id
+      const configUps = configSubscriptions.get(groupId) ?? new Set()
+      const dbSubscriptions = await this.getGroupSubscriptions(groupId)
+      for (const subscription of dbSubscriptions) {
+        const host_mid = subscription.host_mid
+        if (!configUps.has(String(host_mid))) {
+          removedSubscriptions.push({ groupId, host_mid })
+          const cacheCount = await this.getQuery(
+            'SELECT COUNT(*) as count FROM DynamicCaches WHERE groupId = ? AND host_mid = ?',
+            [groupId, host_mid]
+          )
+          removedCaches += Number(cacheCount?.count || 0)
+        }
+      }
+    }
+
+    let removedUsers = 0
+    const allUsers = await this.allQuery('SELECT host_mid FROM BilibiliUsers')
+    for (const user of allUsers) {
+      const hasConfigSubscription = [...configSubscriptions.values()].some(hostMids => hostMids.has(String(user.host_mid)))
+      if (!hasConfigSubscription) removedUsers++
+    }
+    return { configSubscriptions, invalidItems, emptyConfig, removedSubscriptions, removedCaches, removedUsers }
+  }
+
+  /**
    * 批量同步配置文件中的订阅到数据库
    * @param {bilibiliPushItem[]} configItems - 配置文件中的订阅项
-   * @returns {Promise<void>}
+   * @returns {Promise<boolean>}
    */
   async syncConfigSubscriptions(configItems) {
+    const plan = await this.previewConfigSubscriptionSync(configItems)
+    if (plan.invalidItems.length > 0) {
+      const notified = await Config.notifyPushlistDatabaseWarning({
+        platform: 'B站',
+        reason: '检测到异常推送配置，跳过数据库同步',
+        invalidItems: plan.invalidItems.length,
+        phase: 'before',
+        note: '本次未执行订阅、用户或去重缓存删除'
+      })
+      if (!notified) logger.warn('[BilibiliDB] 未能通知主人，已跳过异常配置同步')
+      return false
+    }
+    if (plan.removedSubscriptions.length > 0 || plan.removedCaches > 0 || plan.removedUsers > 0) {
+      const notified = await Config.notifyPushlistDatabaseWarning({
+        platform: 'B站',
+        reason: plan.emptyConfig ? '推送列表为空并将清理现有订阅数据' : '同步配置并删除不存在的订阅或用户记录',
+        removedSubscriptions: plan.removedSubscriptions.length,
+        removedCaches: plan.removedCaches,
+        removedUsers: plan.removedUsers,
+        phase: 'before',
+        note: plan.emptyConfig ? '若不是主动清空推送列表，请立即检查锅巴保存结果' : '通知成功后才继续执行，订阅对应的去重缓存也会被删除'
+      })
+      if (!notified) {
+        logger.warn('[BilibiliDB] 未能通知主人，已跳过订阅和去重缓存删除')
+        return false
+      }
+    }
+
     // 1. 收集配置文件中的所有订阅关系
-    const configSubscriptions = /* @__PURE__ */ new Map()
+    const { configSubscriptions } = plan
     // 初始化每个群组的订阅UP集合
     for (const item of configItems) {
       const host_mid = item.host_mid
       const remark = item.remark ?? ''
       // 创建或更新B站用户记录
       await this.getOrCreateBilibiliUser(host_mid, remark)
-      if (item.parsedynamic) {
+      if (Object.hasOwn(item, 'parsedynamic')) {
         await this.updateParseDynamic(host_mid, JSON.stringify(item.parsedynamic))
       }
       if (item.filterMode) {
@@ -508,7 +625,7 @@ export class BilibiliDBBase {
         if (!configSubscriptions.has(groupId)) {
           configSubscriptions.set(groupId, /* @__PURE__ */ new Set())
         }
-        configSubscriptions.get(groupId)?.add(host_mid)
+        configSubscriptions.get(groupId)?.add(String(host_mid))
         // 检查是否已订阅
         const isSubscribed = await this.isSubscribed(host_mid, groupId)
         // 如果未订阅，创建订阅关系
@@ -528,7 +645,7 @@ export class BilibiliDBBase {
       // 找出需要删除的订阅（在数据库中存在但配置文件中不存在）
       for (const subscription of dbSubscriptions) {
         const host_mid = subscription.host_mid
-        if (!configUps.has(host_mid)) {
+        if (!configUps.has(String(host_mid))) {
           await this.unsubscribeBilibiliUser(groupId, host_mid)
           logger.mark(`已删除群组 ${groupId} 对UP主 ${host_mid} 的订阅`)
         }
@@ -550,6 +667,7 @@ export class BilibiliDBBase {
         logger.mark(`已删除UP主 ${host_mid} 的记录及相关过滤设置（不再被任何群组订阅）`)
       }
     }
+    return true
   }
   /**
    * 更新用户的推送解析独立配置
@@ -557,10 +675,25 @@ export class BilibiliDBBase {
   async updateParseDynamic(host_mid, parsedynamic) {
     const user = await this.getOrCreateBilibiliUser(host_mid)
     const now = (/* @__PURE__ */ new Date()).toISOString()
-    await this.runQuery(
-      'UPDATE BilibiliUsers SET parsedynamic = ?, updatedAt = ? WHERE host_mid = ?',
-      [parsedynamic, now, host_mid]
-    )
+    try {
+      await this.runQuery(
+        'UPDATE BilibiliUsers SET parsedynamic = ?, updatedAt = ? WHERE host_mid = ?',
+        [parsedynamic, now, host_mid]
+      )
+    } catch (error) {
+      try {
+        await Config.notifyPushlistDatabaseWarning({
+          platform: 'B站',
+          reason: '同步 parsedynamic 字段失败，已中止配置同步',
+          phase: 'before',
+          error,
+          note: '请检查 BilibiliUsers 表结构；本次不会继续执行订阅清理'
+        })
+      } catch (notifyError) {
+        logger.warn('[BilibiliDB] parsedynamic 字段错误告警发送失败:', notifyError)
+      }
+      throw error
+    }
     return { ...user, parsedynamic, updatedAt: now }
   }
 
@@ -880,6 +1013,25 @@ export class BilibiliDBBase {
    */
   async cleanOldDynamicCache(days = 7) {
     const cutoffDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
+    const countResult = await this.getQuery(
+      'SELECT COUNT(*) as count FROM DynamicCaches WHERE datetime(createdAt) < datetime(?)',
+      [cutoffDate.toISOString()]
+    )
+    const deletedCount = Number(countResult?.count || 0)
+    if (deletedCount === 0) return 0
+
+    const notified = await Config.notifyPushlistDatabaseWarning({
+      platform: 'B站',
+      reason: '清理过期去重缓存',
+      removedCaches: deletedCount,
+      phase: 'before',
+      note: '清理后超过保留期的动态可能在重新订阅或重新发现时再次进入推送列表'
+    })
+    if (!notified) {
+      logger.warn('[BilibiliDB] 未能通知主人，已跳过去重缓存清理')
+      return 0
+    }
+
     const result = await this.runQuery(
       'DELETE FROM DynamicCaches WHERE datetime(createdAt) < datetime(?)',
       [cutoffDate.toISOString()]

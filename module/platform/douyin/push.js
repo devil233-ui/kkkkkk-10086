@@ -132,7 +132,7 @@ export class DouYinpush extends Base {
 
   async runAction() {
     try {
-      await this.syncConfigToDatabase()
+      if (!await this.syncConfigToDatabase()) return false
 
       // 清理旧的作品缓存记录
       const deletedCount = await cleanOldDynamicCache('douyin', 1)
@@ -163,10 +163,10 @@ export class DouYinpush extends Base {
   async syncConfigToDatabase() {
     // 如果配置文件中没有抖音推送列表，直接返回
     if (!Config.pushlist.douyin || Config.pushlist.douyin.length === 0) {
-      return
+      return true
     }
 
-    await douyinDB?.syncConfigSubscriptions(Config.pushlist.douyin)
+    return (await douyinDB?.syncConfigSubscriptions(Config.pushlist.douyin)) !== false
   }
 
   /**

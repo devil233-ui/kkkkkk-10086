@@ -28,6 +28,8 @@ const password = (field, label, bottomHelpMessage) => ({
   }
 })
 
+const COOKIE_CONFIGURED_MARKER = '已配置（不会回显）'
+
 const sw = (field, label, bottomHelpMessage = '') => ({
   field,
   label,
@@ -218,7 +220,7 @@ const getGuobaConfigData = () => Object.fromEntries(
   Object.entries(CONFIG_FIELDS).map(([name, fields]) => [
     name,
     name === 'cookies'
-      ? Object.fromEntries(fields.map(field => [field, '']))
+      ? Object.fromEntries(fields.map(field => [field, Config.cookies?.[field] ? COOKIE_CONFIGURED_MARKER : '']))
       : sanitizeGuobaModule(name, pickFields(Config[name], fields))
   ])
 )
@@ -235,7 +237,7 @@ const normalizeCookieUpdates = value => {
   const updates = {}
   for (const field of CONFIG_FIELDS.cookies) {
     const cookie = typeof value?.[field] === 'string' ? value[field].trim() : ''
-    if (!cookie) continue
+    if (!cookie || cookie === COOKIE_CONFIGURED_MARKER) continue
     if (!/(?:^|;\s*)[^=;\s]+=[^;]*/.test(cookie)) throw new Error(`${field} Cookie 格式无效`)
     updates[field] = cookie
   }
@@ -357,10 +359,10 @@ const bilibiliPushListSchema = {
 const schemas = [
   group('基础配置'),
   divider('Cookie 配置'),
-  password('cookies.douyin', '抖音 Cookie', '留空保存不会修改；也可使用扫码登录或 #kkk设置抖音ck'),
-  password('cookies.bilibili', 'B站 Cookie', '留空保存不会修改；登录后可获得更高视频画质'),
-  password('cookies.kuaishou', '快手 Cookie', '留空保存不会修改'),
-  password('cookies.xiaohongshu', '小红书 Cookie', '留空保存不会修改'),
+  password('cookies.douyin', '抖音 Cookie', '显示“已配置”但不会回显内容；留空或保持该状态保存不会修改'),
+  password('cookies.bilibili', 'B站 Cookie', '显示“已配置”但不会回显内容；留空或保持该状态保存不会修改'),
+  password('cookies.kuaishou', '快手 Cookie', '显示“已配置”但不会回显内容；留空或保持该状态保存不会修改'),
+  password('cookies.xiaohongshu', '小红书 Cookie', '显示“已配置”但不会回显内容；留空或保持该状态保存不会修改'),
 
   divider('全局开关'),
   sw('app.videotool', '总开关', '视频解析工具总开关，修改后重启生效'),

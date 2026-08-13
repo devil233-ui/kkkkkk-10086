@@ -34,8 +34,9 @@ export class DouyinDBBase {
       await this.createTables()
       logger.debug('[DouyinDB] 数据库模型同步成功')
       logger.debug('[DouyinDB] 正在同步配置订阅...')
-      logger.debug('[DouyinDB] 配置项数量:', Config.pushlist.douyin?.length || 0)
-      await this.syncConfigSubscriptions(Config.pushlist.douyin || [])
+      const pushList = Config.pushlist?.douyin
+      logger.debug('[DouyinDB] 配置项数量:', Array.isArray(pushList) ? pushList.length : '不可用')
+      await this.syncConfigSubscriptions(pushList)
       logger.debug('[DouyinDB] 配置订阅同步成功')
       logger.debug(logger.green('--------------------------[DouyinDB] 初始化数据库完成--------------------------'))
     } catch (error) {
@@ -451,6 +452,94 @@ export class DouyinDBBase {
   }
 
   /**
+   * 构建配置中的抖音订阅集合，并拒绝可能导致误删的残缺配置。
+   * @param {douyinPushItem[]} configItems 配置文件中的订阅项
+   * @returns {{configSubscriptions: Map<string, Set<string>>, invalidItems: number[], emptyConfig: boolean}}
+   */
+  buildConfigSubscriptionMap(configItems) {
+    const configSubscriptions = new Map()
+    const invalidItems = []
+    if (!Array.isArray(configItems)) return { configSubscriptions, invalidItems: [0], emptyConfig: false }
+
+    for (const [index, item] of configItems.entries()) {
+      const secUid = item?.sec_uid
+      const groups = item?.group_id
+      const pushTypes = item?.pushTypes
+      const validPushTypes = !Object.hasOwn(item || {}, 'pushTypes') || (
+        Array.isArray(pushTypes) && pushTypes.length > 0 && pushTypes.every(type => ['post', 'live'].includes(type))
+      )
+      if (secUid === undefined || secUid === null || String(secUid).trim() === '' || !Array.isArray(groups) || groups.length === 0 || !validPushTypes) {
+        invalidItems.push(index)
+        continue
+      }
+
+      const groupIds = []
+      let invalid = false
+      for (const groupWithBot of groups) {
+        if (typeof groupWithBot !== 'string') {
+          invalid = true
+          break
+        }
+        const parts = groupWithBot.split(':').map(value => value.trim())
+        const [groupId, botId] = parts
+        if (parts.length !== 2 || !groupId || !botId) {
+          invalid = true
+          break
+        }
+        groupIds.push(groupId)
+      }
+      if (invalid) {
+        invalidItems.push(index)
+        continue
+      }
+
+      for (const groupId of groupIds) {
+        if (!configSubscriptions.has(groupId)) configSubscriptions.set(groupId, new Set())
+        configSubscriptions.get(groupId).add(String(secUid))
+      }
+    }
+    return { configSubscriptions, invalidItems, emptyConfig: configItems.length === 0 }
+  }
+
+  /**
+   * 只读预览配置同步将删除的订阅和去重缓存。
+   * @param {douyinPushItem[]} configItems 配置文件中的订阅项
+   * @returns {Promise<{configSubscriptions: Map<string, Set<string>>, invalidItems: number[], emptyConfig: boolean, removedSubscriptions: {groupId: string, sec_uid: string}[], removedCaches: number, removedUsers: number}>}
+   */
+  async previewConfigSubscriptionSync(configItems) {
+    const { configSubscriptions, invalidItems, emptyConfig } = this.buildConfigSubscriptionMap(configItems)
+    if (invalidItems.length > 0) return { configSubscriptions, invalidItems, emptyConfig, removedSubscriptions: [], removedCaches: 0, removedUsers: 0 }
+
+    const removedSubscriptions = []
+    let removedCaches = 0
+    const allGroups = await this.allQuery('SELECT * FROM Groups')
+    for (const group of allGroups) {
+      const groupId = group.id
+      const configUsers = configSubscriptions.get(groupId) ?? new Set()
+      const dbSubscriptions = await this.getGroupSubscriptions(groupId)
+      for (const subscription of dbSubscriptions) {
+        const sec_uid = subscription.sec_uid
+        if (!configUsers.has(String(sec_uid))) {
+          removedSubscriptions.push({ groupId, sec_uid })
+          const cacheCount = await this.getQuery(
+            'SELECT COUNT(*) as count FROM AwemeCaches WHERE groupId = ? AND sec_uid = ?',
+            [groupId, sec_uid]
+          )
+          removedCaches += Number(cacheCount?.count || 0)
+        }
+      }
+    }
+
+    let removedUsers = 0
+    const allUsers = await this.allQuery('SELECT sec_uid FROM DouyinUsers')
+    for (const user of allUsers) {
+      const hasConfigSubscription = [...configSubscriptions.values()].some(secUids => secUids.has(String(user.sec_uid)))
+      if (!hasConfigSubscription) removedUsers++
+    }
+    return { configSubscriptions, invalidItems, emptyConfig, removedSubscriptions, removedCaches, removedUsers }
+  }
+
+  /**
    * 获取抖音用户信息
    * @param {string} sec_uid - 抖音用户sec_uid
    * @returns {Promise<{ sec_uid: string, short_id?: string, remark?: string, living: boolean, filterMode: 'blacklist' | 'whitelist', createdAt: string, updatedAt: string } | null>} 返回用户信息，如果不存在则返回null
@@ -493,11 +582,39 @@ export class DouyinDBBase {
   /**
    * 批量同步配置文件中的订阅到数据库
    * @param {douyinPushItem[]} configItems 配置文件中的订阅项
-   * @returns {Promise<void>}
+   * @returns {Promise<boolean>}
    */
   async syncConfigSubscriptions(configItems) {
+    const plan = await this.previewConfigSubscriptionSync(configItems)
+    if (plan.invalidItems.length > 0) {
+      const notified = await Config.notifyPushlistDatabaseWarning({
+        platform: '抖音',
+        reason: '检测到异常推送配置，跳过数据库同步',
+        invalidItems: plan.invalidItems.length,
+        phase: 'before',
+        note: '本次未执行订阅、用户或去重缓存删除'
+      })
+      if (!notified) logger.warn('[DouyinDB] 未能通知主人，已跳过异常配置同步')
+      return false
+    }
+    if (plan.removedSubscriptions.length > 0 || plan.removedCaches > 0 || plan.removedUsers > 0) {
+      const notified = await Config.notifyPushlistDatabaseWarning({
+        platform: '抖音',
+        reason: plan.emptyConfig ? '推送列表为空并将清理现有订阅数据' : '同步配置并删除不存在的订阅或用户记录',
+        removedSubscriptions: plan.removedSubscriptions.length,
+        removedCaches: plan.removedCaches,
+        removedUsers: plan.removedUsers,
+        phase: 'before',
+        note: plan.emptyConfig ? '若不是主动清空推送列表，请立即检查锅巴保存结果' : '通知成功后才继续执行，订阅对应的去重缓存也会被删除'
+      })
+      if (!notified) {
+        logger.warn('[DouyinDB] 未能通知主人，已跳过订阅和去重缓存删除')
+        return false
+      }
+    }
+
     // 1. 收集配置文件中的所有订阅关系
-    const configSubscriptions = /* @__PURE__ */ new Map()
+    const { configSubscriptions } = plan
     // 初始化每个群组的订阅用户集合
     for (const item of configItems) {
       const sec_uid = item.sec_uid
@@ -530,7 +647,7 @@ export class DouyinDBBase {
         if (!configSubscriptions.has(groupId)) {
           configSubscriptions.set(groupId, /* @__PURE__ */ new Set())
         }
-        configSubscriptions.get(groupId)?.add(sec_uid)
+        configSubscriptions.get(groupId)?.add(String(sec_uid))
         // 检查是否已订阅
         const isSubscribed = await this.isSubscribed(sec_uid, groupId)
         // 如果未订阅，创建订阅关系
@@ -550,7 +667,7 @@ export class DouyinDBBase {
       // 找出需要删除的订阅（在数据库中存在但配置文件中不存在）
       for (const subscription of dbSubscriptions) {
         const sec_uid = subscription.sec_uid
-        if (!configUsers.has(sec_uid)) {
+        if (!configUsers.has(String(sec_uid))) {
           // 删除订阅关系
           await this.unsubscribeDouyinUser(groupId, sec_uid)
           logger.mark(`已删除群组 ${groupId} 对抖音用户 ${sec_uid} 的订阅`)
@@ -798,6 +915,25 @@ export class DouyinDBBase {
    */
   async cleanOldAwemeCache(days = 7) {
     const cutoffDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
+    const countResult = await this.getQuery(
+      'SELECT COUNT(*) as count FROM AwemeCaches WHERE datetime(createdAt) < datetime(?)',
+      [cutoffDate.toISOString()]
+    )
+    const deletedCount = Number(countResult?.count || 0)
+    if (deletedCount === 0) return 0
+
+    const notified = await Config.notifyPushlistDatabaseWarning({
+      platform: '抖音',
+      reason: '清理过期去重缓存',
+      removedCaches: deletedCount,
+      phase: 'before',
+      note: '清理后超过保留期的作品可能在重新订阅或重新发现时再次进入推送列表'
+    })
+    if (!notified) {
+      logger.warn('[DouyinDB] 未能通知主人，已跳过作品缓存清理')
+      return 0
+    }
+
     const result = await this.runQuery(
       'DELETE FROM AwemeCaches WHERE datetime(createdAt) < datetime(?)',
       [cutoffDate.toISOString()]

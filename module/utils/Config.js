@@ -1,5 +1,6 @@
 import YamlReader from './YamlReader.js'
 import Version from './Version.js'
+import cfg from '../../../../lib/config/config.js'
 import chokidar from 'chokidar'
 import fs from 'node:fs'
 import YAML from 'yaml'
@@ -220,6 +221,10 @@ class Cfg {
     reloadTimers = {}
     /** 推送列表配置异常的最近主人通知时间 */
     pushlistWarningAt = 0
+    /** 推送数据库风险预警的最近主人通知时间 */
+    pushlistDatabaseWarningAt = 0
+    /** 最近一次数据库风险预警的摘要，避免同一事件重复通知 */
+    pushlistDatabaseWarningKey = ''
 
     constructor() {
         this.config = {}
@@ -636,7 +641,7 @@ class Cfg {
         const parsed = this.readYamlFile(file)
         if (!parsed.valid) {
             logger.warn(`[Config] 配置文件暂不可用(${parsed.reason}): ${file}，继续使用上一份有效配置`)
-            if (name === 'pushlist' && type === 'config') this.notifyPushlistConfigIssue()
+            if (name === 'pushlist' && type === 'config') await this.notifyPushlistConfigIssue()
             return
         }
 
@@ -648,43 +653,132 @@ class Cfg {
             await this.syncPushlistToDatabase()
         } catch (error) {
             logger.error('[Config] 文件监听同步数据库失败:', error)
-        } finally {
-            await this.syncConfigToDatabase()
+            return
         }
+
+        try {
+            await this.syncConfigToDatabase()
+        } catch (error) {
+            logger.error('[Config] 文件监听同步订阅失败:', error)
+        }
+    }
+
+    /**
+     * 向机器人主人发送插件告警。
+     * @param {string} message 告警内容
+     * @param {'pushlistWarningAt'|'pushlistDatabaseWarningAt'} stateKey 限流状态字段
+     * @param {number} cooldown 限流时间，单位毫秒
+     * @param {string} [dedupeKey] 同一类告警的去重键
+     * @returns {Promise<'sent'|'duplicate'|'unavailable'>} 通知结果
+     */
+    async notifyMasters(message, stateKey, cooldown, dedupeKey = '') {
+        const stateKeyAt = this[stateKey] || 0
+        const stateKeyName = stateKey === 'pushlistDatabaseWarningAt' ? 'pushlistDatabaseWarningKey' : ''
+        if (Date.now() - stateKeyAt < cooldown && (!dedupeKey || this[stateKeyName] === dedupeKey)) return 'duplicate'
+
+        const bot = globalThis.Bot
+        const recipients = []
+        const deliveredMasterIds = new Set()
+        const masterByBot = cfg.master && typeof cfg.master === 'object' ? cfg.master : {}
+        for (const [botId, users] of Object.entries(masterByBot)) {
+            const masterList = Array.isArray(users) ? users : [users]
+            for (const master of masterList.filter(Boolean)) {
+                const target = bot?.[botId]?.pickFriend?.(master)
+                if (target?.sendMsg) {
+                    deliveredMasterIds.add(String(master))
+                    recipients.push({ target, master, botId })
+                }
+            }
+        }
+
+        // 某些旧配置只保留 masterQQ，使用云崽聚合 Bot 补找尚未按 Bot 分组的主人。
+        let masters = cfg.masterQQ || []
+        if (!Array.isArray(masters)) masters = [masters]
+        for (const master of masters.filter(Boolean)) {
+            if (deliveredMasterIds.has(String(master))) continue
+            const target = bot?.pickFriend?.(master, true)
+            if (target?.sendMsg) {
+                deliveredMasterIds.add(String(master))
+                recipients.push({ target, master, botId: target.self_id || 'auto' })
+            }
+        }
+
+        if (recipients.length === 0) {
+            logger.warn('[Config] 无法向主人发送推送配置异常通知：主人或机器人不存在')
+            return 'unavailable'
+        }
+
+        const sends = []
+        for (const { target, master, botId } of recipients) {
+            try {
+                sends.push(Promise.resolve().then(() => target.sendMsg(message)).then(() => true).catch(error => {
+                    logger.warn(`[Config] 推送配置异常主人通知发送失败：${botId} -> ${master}：${error}`)
+                    return false
+                }))
+            } catch (error) {
+                logger.warn(`[Config] 推送配置异常主人通知发送失败：${botId} -> ${master}：${error}`)
+            }
+        }
+        const results = await Promise.all(sends)
+        if (!results.some(Boolean)) return 'unavailable'
+
+        this[stateKey] = Date.now()
+        if (dedupeKey) this[stateKeyName] = dedupeKey
+        return 'sent'
     }
 
     /**
      * 向机器人主人通知推送列表配置异常，避免配置暂不可用时悄然停推。
      */
-    notifyPushlistConfigIssue() {
-        if (Date.now() - this.pushlistWarningAt < 60 * 60 * 1000) return
-
-        let masters = global.BotConfig?.master?.user || global.BotConfig?.masterQQ || []
-        if (!Array.isArray(masters)) masters = [masters]
-        masters = masters.filter(Boolean)
-
-        const bot = Object.values(global.Bot || {}).find(item => item?.pickUser || item?.pickFriend)
-        if (masters.length === 0 || !bot) {
-            logger.warn('[Config] 无法向主人发送推送配置异常通知：主人或机器人不存在')
-            return
-        }
-
-        this.pushlistWarningAt = Date.now()
+    async notifyPushlistConfigIssue() {
         const message = '⚠️kkkkkk-10086推送配置异常\npushlist.yaml重载时为空、缺失或格式错误。为避免漏推送，当前进程继续使用上一份有效配置；请检查配置文件。'
-        for (const master of masters) {
-            try {
-                const target = bot.pickUser?.(master) || bot.pickFriend?.(master)
-                if (!target?.sendMsg) {
-                    logger.warn('[Config] 无法向主人发送推送配置异常通知：主人' + master + '不可达')
-                    continue
-                }
-                Promise.resolve(target.sendMsg(message)).catch(error => {
-                    logger.warn('[Config] 推送配置异常主人通知发送失败：' + error)
-                })
-            } catch (error) {
-                logger.warn('[Config] 推送配置异常主人通知发送失败：' + error)
-            }
-        }
+        await this.notifyMasters(message, 'pushlistWarningAt', 60 * 60 * 1000)
+    }
+
+    /**
+     * 通知主人推送数据库即将或已经发生高风险变更。
+     * @param {Object} details 变更摘要
+     * @param {string} [details.platform='未知平台'] 平台名称
+     * @param {string} [details.reason='配置或缓存同步'] 变更原因
+     * @param {number} [details.removedSubscriptions=0] 将删除的订阅关系数量
+     * @param {number} [details.removedCaches=0] 将删除的去重缓存数量
+     * @param {number} [details.removedUsers=0] 将删除的平台用户记录数量
+     * @param {number} [details.invalidItems=0] 配置异常项数量
+     * @param {string} [details.phase='before'] 预警阶段
+     * @param {string} [details.error=''] 错误摘要
+     * @param {string} [details.note=''] 补充说明
+     */
+    async notifyPushlistDatabaseWarning({
+        platform = '未知平台',
+        reason = '配置或缓存同步',
+        removedSubscriptions = 0,
+        removedCaches = 0,
+        removedUsers = 0,
+        invalidItems = 0,
+        phase = 'before',
+        error = '',
+        note = ''
+    } = {}) {
+        const safeError = String(error || '').replace(/[\r\n]+/g, ' ').slice(0, 180)
+        const key = [platform, reason, removedSubscriptions, removedCaches, removedUsers, invalidItems, phase, safeError].join('|')
+        if (key === this.pushlistDatabaseWarningKey && Date.now() - this.pushlistDatabaseWarningAt < 10 * 60 * 1000) return true
+
+        const action = phase === 'before' ? '检测到即将发生' : '已发生'
+        const lines = [
+            '⚠️kkkkkk-10086推送数据库预警',
+            `平台：${platform}`,
+            `动作：${action}${reason}`
+        ]
+        if (removedSubscriptions > 0) lines.push(`订阅关系：${removedSubscriptions} 条`)
+        if (removedCaches > 0) lines.push(`去重缓存：${removedCaches} 条`)
+        if (removedUsers > 0) lines.push(`用户记录：${removedUsers} 条`)
+        if (invalidItems > 0) lines.push(`异常配置项：${invalidItems} 条`)
+        if (safeError) lines.push(`错误：${safeError}`)
+        if (note) lines.push(`说明：${note}`)
+        lines.push('相关历史记录可能再次进入推送列表，请检查 pushlist.yaml、锅巴保存内容和重启时机。')
+
+        const result = await this.notifyMasters(lines.join('\n'), 'pushlistDatabaseWarningAt', 10 * 60 * 1000, key)
+        return result === 'sent' || result === 'duplicate'
     }
 
     /**
@@ -803,6 +897,7 @@ class Cfg {
             if (pushlistConfig.douyin) await this.syncFilterConfigToDb(pushlistConfig.douyin, await getDouyinDB(), 'sec_uid')
             if (pushlistConfig.bilibili) await this.syncFilterConfigToDb(pushlistConfig.bilibili, await getBilibiliDB(), 'host_mid')
             logger.info('[Config] pushlist的过滤配置已同步到数据库')
+            return true
         } catch (error) {
             logger.error('[Config] 同步pushlist配置到数据库失败:', error)
             throw error
@@ -893,6 +988,7 @@ class Cfg {
      * 这个方法应该在所有模块都初始化完成后调用
      */
     async syncConfigToDatabase() {
+        let success = true
         try {
             /** @type {PushlistConfig} */
             const pushCfg = this.getDefOrConfig('pushlist')
@@ -900,12 +996,20 @@ class Cfg {
             const douyinDB = await getDouyinDB()
             const bilibiliDB = await getBilibiliDB()
             // 同步配置到数据库
-            if (pushCfg.bilibili) await bilibiliDB?.syncConfigSubscriptions(pushCfg.bilibili)
-            if (pushCfg.douyin) await douyinDB?.syncConfigSubscriptions(pushCfg.douyin)
+            if (pushCfg.bilibili) {
+                const synced = await bilibiliDB?.syncConfigSubscriptions(pushCfg.bilibili)
+                if (synced === false) success = false
+            }
+            if (pushCfg.douyin) {
+                const synced = await douyinDB?.syncConfigSubscriptions(pushCfg.douyin)
+                if (synced === false) success = false
+            }
             logger.debug('[BilibiliDB] + [DouyinDB] 配置已同步到数据库')
         } catch (error) {
             logger.error('同步配置到数据库失败:', error)
+            return false
         }
+        return success
     }
 
 }

@@ -147,7 +147,7 @@ export class Bilibilipush extends Base {
 
   async runAction() {
     try {
-      await this.syncConfigToDatabase()
+      if (!await this.syncConfigToDatabase()) return false
       this.ensureConfigFields(Config.pushlist.bilibili || [])
       // 清理旧的动态缓存记录
       const deletedCount = await cleanOldDynamicCache('bilibili', 1)
@@ -176,10 +176,10 @@ export class Bilibilipush extends Base {
   async syncConfigToDatabase() {
     // 如果配置文件中没有B站推送列表，直接返回
     if (!Config.pushlist.bilibili || Config.pushlist.bilibili.length === 0) {
-      return
+      return true
     }
 
-    await bilibiliDB?.syncConfigSubscriptions(Config.pushlist.bilibili)
+    return (await bilibiliDB?.syncConfigSubscriptions(Config.pushlist.bilibili)) !== false
   }
 
   /**
