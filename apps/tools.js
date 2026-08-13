@@ -47,7 +47,7 @@ const generateRules = () => isVideoToolEnabled()
     .map(({ reg, handler }) => ({ reg, fnc: handler }))
   : []
 
-const findPlatformConfig = msg => PLATFORM_CONFIG.find(config => config.enabled && config.reg.test(msg || ''))
+const findPlatformConfig = (msg, includeDisabled = false) => PLATFORM_CONFIG.find(config => (includeDisabled || config.enabled) && config.reg.test(msg || ''))
 const getEventUserId = e => String(e.user_id || e.userId || e.sender?.user_id || e.sender?.userId || 'unknown')
 const getEventGroupId = e => String(e.group_id || e.groupId || 'private')
 const getSelectionKey = e => `${getEventGroupId(e)}:${getEventUserId(e)}`
@@ -111,7 +111,9 @@ export class kkkTools extends plugin {
     }
 
     // 查找匹配的平台并直接调用处理函数
-    await this.dispatchPlatform(e)
+    if (!await this.dispatchPlatform(e, true)) {
+      await e.reply('未从消息或引用内容中识别到支持的平台链接')
+    }
     return true
   }
 
@@ -130,10 +132,11 @@ export class kkkTools extends plugin {
   /**
    * 根据消息内容分发到对应平台处理器
    * @param {any} e 事件对象
+   * @param {boolean} includeDisabled 是否允许显式解析绕过平台被动解析开关
    * @returns {Promise<boolean>}
    */
-  async dispatchPlatform(e) {
-    const config = findPlatformConfig(e.msg)
+  async dispatchPlatform(e, includeDisabled = false) {
+    const config = findPlatformConfig(e.msg, includeDisabled)
     if (!config) return false
     await this[config.handler](e)
     return true

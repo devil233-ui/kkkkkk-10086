@@ -237,6 +237,9 @@ export class QRCodeScanner {
       const smallBlock = Math.min(400, Math.floor(Math.min(width, height) * 0.3))
       const mediumBlock = Math.min(600, Math.floor(Math.min(width, height) * 0.5))
       const largeBlock = Math.min(800, Math.floor(Math.max(width, height) * 0.6))
+      const cardQrBlock = Math.min(700, width, height)
+
+      scanRegions.push({ name: "右下角-卡片二维码", x: width - cardQrBlock, y: height - cardQrBlock, w: cardQrBlock, h: cardQrBlock })
 
       scanRegions.push({ name: "左上角-小", x: 0, y: 0, w: Math.min(smallBlock, width), h: Math.min(smallBlock, height) })
       scanRegions.push({ name: "右上角-小", x: Math.max(0, width - smallBlock), y: 0, w: Math.min(smallBlock, width), h: Math.min(smallBlock, height) })
@@ -246,8 +249,6 @@ export class QRCodeScanner {
       scanRegions.push({ name: "左上角-中", x: 0, y: 0, w: Math.min(mediumBlock, width), h: Math.min(mediumBlock, height) })
       scanRegions.push({ name: "右上角-中", x: Math.max(0, width - mediumBlock), y: 0, w: Math.min(mediumBlock, width), h: Math.min(mediumBlock, height) })
       scanRegions.push({ name: "左下角-中", x: 0, y: Math.max(0, height - mediumBlock), w: Math.min(mediumBlock, width), h: Math.min(mediumBlock, height) })
-      scanRegions.push({ name: "右下角-中", x: Math.max(0, width - mediumBlock), y: Math.max(0, height - mediumBlock), w: Math.min(mediumBlock, width), h: Math.min(mediumBlock, height) })
-
       const blockW = Math.min(largeBlock, width)
       const blockH = Math.min(largeBlock, height)
       scanRegions.push({ name: "左上角-大", x: 0, y: 0, w: blockW, h: blockH })

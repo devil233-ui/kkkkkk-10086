@@ -19,7 +19,17 @@ const supportedLinkPatterns = [
 const findSupportedLink = (value, depth = 0) => {
   if (depth > 8 || value === null || value === undefined) return ''
   if (typeof value === 'string') {
-    const links = value.match(/https?:\/\/[^\s"'<>\\]+/g) || []
+    const normalized = value.replace(/\\\//g, '/')
+    try {
+      const parsed = JSON.parse(normalized)
+      if (parsed !== normalized) {
+        const nestedLink = findSupportedLink(parsed, depth + 1)
+        if (nestedLink) return nestedLink
+      }
+    } catch {
+      // 普通文本不需要 JSON 解析
+    }
+    const links = normalized.match(/https?:\/\/[^\s"'<>\\]+/g) || []
     return links.find(link => supportedLinkPatterns.some(pattern => pattern.test(link))) || ''
   }
   if (Array.isArray(value)) {
@@ -36,6 +46,35 @@ const findSupportedLink = (value, depth = 0) => {
     }
   }
   return ''
+}
+
+const hasSupportedLink = text => supportedLinkPatterns.some(pattern => pattern.test(text || ''))
+
+const getMessageSegments = payload => {
+  if (!payload) return []
+  if (Array.isArray(payload)) return payload.flatMap(getMessageSegments)
+  if (typeof payload !== 'object') return []
+  if (typeof payload.type === 'string') return [payload]
+  for (const container of [payload.message, payload.data?.message, payload.messages]) {
+    if (container && (Array.isArray(container) || typeof container === 'object')) {
+      const segments = getMessageSegments(container)
+      if (segments.length) return segments
+    }
+  }
+  return []
+}
+
+const getMessageSegmentText = msg => {
+  const rawText = msg?.text ?? msg?.data?.text ?? msg?.data?.data ?? msg?.data ?? ''
+  if (typeof rawText === 'string') return rawText
+  if (rawText && typeof rawText === 'object') return JSON.stringify(rawText)
+  return ''
+}
+
+const getMessageImageSource = msg => {
+  const candidates = [msg?.url, msg?.data?.url, msg?.file, msg?.data?.file]
+    .filter(value => typeof value === 'string' && value)
+  return candidates.find(value => /^(https?:\/\/|base64:\/\/|data:image\/)/i.test(value) || fs.existsSync(value)) || candidates[0] || ''
 }
 
 /** 常用工具合集 */
@@ -129,7 +168,9 @@ class Tools {
       const buffer = await this.getImageBuffer(image)
       if (!buffer) return null
       let qrContent = scan(buffer)
-      if (!qrContent) qrContent = await QRCodeScanner.scanFromBuffer(buffer)
+      if (!qrContent || !hasSupportedLink(qrContent)) {
+        qrContent = await QRCodeScanner.scanFromBuffer(buffer) || qrContent
+      }
       if (qrContent && supportedLinkPatterns.some(pattern => pattern.test(qrContent))) {
         logger.debug(`从${source}二维码中识别到支持的平台链接: ${qrContent}`)
         return qrContent
@@ -169,21 +210,37 @@ class Tools {
    * @returns {Promise<string>}
    */
   async extractMessageText(messages, source = '消息') {
-    for (const msg of messages || []) {
-      if (['text', 'json'].includes(msg?.type)) {
-        const rawText = msg.text ?? msg.data?.text ?? msg.data?.data ?? msg.data ?? ''
-        const text = typeof rawText === 'string' ? rawText : JSON.stringify(rawText)
-        const markdownText = await this.extractMarkdownText(text, source)
-        if (markdownText) return markdownText
-        if (text) return text
-      }
-      if (msg?.type === 'image') {
-        const image = msg.file || msg.url || msg.data?.file || msg.data?.url
-        const qrResult = await this.tryScanImageQrCode(image, source)
-        if (qrResult) return qrResult
+    const segments = getMessageSegments(messages)
+    const textCandidates = []
+
+    for (const msg of segments) {
+      if (['text', 'json', 'xml', 'markdown'].includes(msg?.type)) {
+        const text = getMessageSegmentText(msg)
+        if (!text) continue
+        const cardLink = findSupportedLink(text)
+        if (cardLink) return cardLink
+        if (hasSupportedLink(text)) return text
+        textCandidates.push(text)
       }
     }
-    return ''
+
+    for (const text of textCandidates) {
+      const markdownText = await this.extractMarkdownText(text, source)
+      if (!markdownText) continue
+      const markdownLink = findSupportedLink(markdownText)
+      if (markdownLink) return markdownLink
+      if (hasSupportedLink(markdownText)) return markdownText
+    }
+
+    for (const msg of segments) {
+      if (msg?.type !== 'image') continue
+      const image = getMessageImageSource(msg)
+      const qrResult = await this.tryScanImageQrCode(image, source)
+      if (qrResult) return qrResult
+    }
+
+    const combinedText = textCandidates.join('')
+    return hasSupportedLink(combinedText) ? combinedText : (textCandidates[0] || '')
   }
 
   /**
@@ -219,37 +276,50 @@ class Tools {
    */
   async getReplyMessage(e) {
     const botAdapter = new Base(e).botadapter
+    const originalMsg = e.msg || ''
     const currentMessageText = await this.extractMessageText(e.message, '当前消息')
-    if (currentMessageText && supportedLinkPatterns.some(pattern => pattern.test(currentMessageText))) {
-      return currentMessageText
+    if (currentMessageText && hasSupportedLink(currentMessageText)) return currentMessageText
+
+    const replySegment = (e.message || []).find((/** @type {{ type?: string }} */ msg) => msg?.type === 'reply')
+    const replyId = e.reply_id ?? replySegment?.id ?? replySegment?.data?.id ?? replySegment?.data?.message_id
+    const replyLoaders = []
+    if (typeof e.getReply === 'function') {
+      replyLoaders.push(['getReply', () => e.getReply()])
+    } else if (replyId && typeof (e.group || e.friend)?.getMsg === 'function') {
+      replyLoaders.push(['getMsg', () => (e.group || e.friend).getMsg(replyId)])
     }
-    // TRSS-Yunzai 处理
-    if (Version.BotName === 'TRSS-Yunzai' && e.reply_id) {
-      const replyMsg = await e.getReply()
-      if (replyMsg) {
-        const sourceArray = Array.isArray(replyMsg) ? replyMsg : [replyMsg]
-        const replyText = await this.extractMessageText(sourceArray.flatMap(item => item.message), '引用消息')
-        if (replyText) e.msg = replyText
+    if (replyId && ['LagrangeCore', 'Lagrange.OneBot', 'OneBotv11'].includes(botAdapter) && typeof e.bot?.sendApi === 'function') {
+      replyLoaders.push(['OneBot get_msg', () => e.bot.sendApi('get_msg', { message_id: replyId })])
+    }
+
+    let replyFallback = ''
+    const replySegmentTypes = new Set()
+    for (const [loaderName, loadReply] of replyLoaders) {
+      try {
+        const replyData = await loadReply()
+        const segments = getMessageSegments(replyData)
+        for (const segment of segments) replySegmentTypes.add(segment?.type || 'unknown')
+        const replyText = await this.extractMessageText(segments, '引用消息')
+        if (replyText && hasSupportedLink(replyText)) return replyText
+        if (replyText && !replyFallback) replyFallback = replyText
+      } catch (error) {
+        logger.warn(`[引用解析] ${loaderName} 获取失败（id=${replyId || 'unknown'}）: ${error instanceof Error ? error.message : String(error)}`)
       }
     }
+
     // ICQQ适配器处理
     if (botAdapter === 'ICQQ' && e.source) {
       const history = await (e.group || e.friend)?.getChatHistory(e.isGroup ? e.source.seq : e.source.time, 1)
       const message = history.pop()?.message
       const replyText = await this.extractMessageText(message, '引用消息')
-      if (replyText) e.msg = replyText
+      if (replyText && hasSupportedLink(replyText)) return replyText
+      if (replyText && !replyFallback) replyFallback = replyText
     }
 
-    // OneBotv11 处理
-    if (['LagrangeCore', 'Lagrange.OneBot', 'OneBotv11'].includes(botAdapter)) {
-      const replyMsg = e.message.find((/** @type {{ type: string; }} */ msg) => msg.type === 'reply')
-      if (replyMsg) {
-        const replyData = await e.bot?.sendApi?.('get_msg', { message_id: replyMsg.id })
-        const replyText = await this.extractMessageText(replyData?.data?.message, '引用消息')
-        if (replyText) e.msg = replyText
-      }
+    if (replyId && replyLoaders.length) {
+      logger.warn(`[引用解析] 未提取到支持的平台链接（id=${replyId}，adapter=${botAdapter}，消息段=${[...replySegmentTypes].join(',') || 'none'}）`)
     }
-    return e.msg || ''
+    return replyFallback || originalMsg
   }
 
   /**
