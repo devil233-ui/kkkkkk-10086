@@ -922,18 +922,6 @@ export class DouyinDBBase {
     const deletedCount = Number(countResult?.count || 0)
     if (deletedCount === 0) return 0
 
-    const notified = await Config.notifyPushlistDatabaseWarning({
-      platform: '抖音',
-      reason: '清理过期去重缓存',
-      removedCaches: deletedCount,
-      phase: 'before',
-      note: '清理后超过保留期的作品可能在重新订阅或重新发现时再次进入推送列表'
-    })
-    if (!notified) {
-      logger.warn('[DouyinDB] 未能通知主人，已跳过作品缓存清理')
-      return 0
-    }
-
     const result = await this.runQuery(
       'DELETE FROM AwemeCaches WHERE datetime(createdAt) < datetime(?)',
       [cutoffDate.toISOString()]
