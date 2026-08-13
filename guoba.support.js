@@ -1,4 +1,5 @@
 import Config from './module/utils/Config.js'
+import { createHash, randomUUID } from 'node:crypto'
 
 const option = (label, value = label) => ({ label, value })
 
@@ -24,11 +25,27 @@ const input = (field, label, bottomHelpMessage = '', component = 'Input') => ({
 const password = (field, label, bottomHelpMessage) => ({
   ...input(field, label, bottomHelpMessage, 'InputPassword'),
   componentProps: {
-    placeholder: '留空则保持现有 Cookie 不变'
+    placeholder: '建议配置'
   }
 })
 
 const COOKIE_CONFIGURED_MARKER = '已配置（不会回显）'
+const COOKIE_VERSION_FIELD = '_cookieVersions'
+const COOKIE_PAGE_TOKEN_FIELD = '_cookiePageToken'
+const COOKIE_CONFIRM_TTL = 2 * 60 * 1000
+
+const cookieFingerprint = cookie => createHash('sha256').update(String(cookie || '')).digest('hex')
+
+const hidden = field => ({
+  field,
+  component: 'Input',
+  required: false,
+  colProps: {
+    style: {
+      display: 'none'
+    }
+  }
+})
 
 const sw = (field, label, bottomHelpMessage = '') => ({
   field,
@@ -216,14 +233,20 @@ const pickFields = (value, fields) => Object.fromEntries(
   fields.filter(key => Object.prototype.hasOwnProperty.call(value || {}, key)).map(key => [key, value[key]])
 )
 
-const getGuobaConfigData = () => Object.fromEntries(
-  Object.entries(CONFIG_FIELDS).map(([name, fields]) => [
-    name,
-    name === 'cookies'
-      ? Object.fromEntries(fields.map(field => [field, Config.cookies?.[field] ? COOKIE_CONFIGURED_MARKER : '']))
-      : sanitizeGuobaModule(name, pickFields(Config[name], fields))
-  ])
-)
+const getGuobaConfigData = () => ({
+  ...Object.fromEntries(
+    Object.entries(CONFIG_FIELDS).map(([name, fields]) => [
+      name,
+      name === 'cookies'
+        ? Object.fromEntries(fields.map(field => [field, Config.cookies?.[field] || '']))
+        : sanitizeGuobaModule(name, pickFields(Config[name], fields))
+    ])
+  ),
+  [COOKIE_VERSION_FIELD]: Object.fromEntries(
+    CONFIG_FIELDS.cookies.map(field => [field, cookieFingerprint(Config.cookies?.[field])])
+  ),
+  [COOKIE_PAGE_TOKEN_FIELD]: randomUUID()
+})
 
 const sanitizeGuobaModule = (name, value) => {
   if (name === 'bilibili' && value.push && typeof value.push === 'object' && !Array.isArray(value.push)) {
@@ -243,6 +266,48 @@ const normalizeCookieUpdates = value => {
   }
   return updates
 }
+
+const getSubmittedCookieVersion = (data, field) => {
+  const nested = data?.[COOKIE_VERSION_FIELD]
+  if (nested && typeof nested === 'object' && !Array.isArray(nested)) return nested[field]
+  return data?.[`${COOKIE_VERSION_FIELD}.${field}`]
+}
+
+export const createCookieOverwriteGuard = ({ ttl = COOKIE_CONFIRM_TTL, now = Date.now } = {}) => {
+  const confirmations = new Map()
+
+  return ({ pageToken = 'missing', submittedVersions = {}, currentCookies = {}, cookieUpdates = {} }) => {
+    const currentTime = now()
+    for (const [key, expiresAt] of confirmations) {
+      if (expiresAt <= currentTime) confirmations.delete(key)
+    }
+
+    const conflicts = []
+    const confirmationKeys = []
+    for (const [field, candidate] of Object.entries(cookieUpdates)) {
+      const currentVersion = cookieFingerprint(currentCookies[field])
+      const candidateVersion = cookieFingerprint(candidate)
+      if (candidateVersion === currentVersion || submittedVersions[field] === currentVersion) continue
+
+      const submittedVersion = submittedVersions[field] || 'missing'
+      const confirmationKey = `${pageToken}:${field}:${submittedVersion}:${currentVersion}:${candidateVersion}`
+      const expiresAt = confirmations.get(confirmationKey)
+      if (expiresAt && expiresAt > currentTime) {
+        confirmationKeys.push(confirmationKey)
+        continue
+      }
+
+      confirmations.set(confirmationKey, currentTime + ttl)
+      conflicts.push(field)
+    }
+    if (!conflicts.length) {
+      for (const key of confirmationKeys) confirmations.delete(key)
+    }
+    return conflicts
+  }
+}
+
+const getCookieOverwriteConflicts = createCookieOverwriteGuard()
 
 const setObjectPath = (target, path, value) => {
   const parts = path.split('.')
@@ -359,10 +424,12 @@ const bilibiliPushListSchema = {
 const schemas = [
   group('基础配置'),
   divider('Cookie 配置'),
-  password('cookies.douyin', '抖音 Cookie', '显示“已配置”但不会回显内容；留空或保持该状态保存不会修改'),
-  password('cookies.bilibili', 'B站 Cookie', '显示“已配置”但不会回显内容；留空或保持该状态保存不会修改'),
-  password('cookies.kuaishou', '快手 Cookie', '显示“已配置”但不会回显内容；留空或保持该状态保存不会修改'),
-  password('cookies.xiaohongshu', '小红书 Cookie', '显示“已配置”但不会回显内容；留空或保持该状态保存不会修改'),
+  password('cookies.douyin', '抖音 Cookie', '登录 https://www.douyin.com/ 获取请求头中的 Cookie，或使用 #kkk设置抖音ck 查看教程'),
+  password('cookies.bilibili', 'B站 Cookie', '不设置时视频画质通常受限，登录 https://www.bilibili.com/ 获取请求头中的 Cookie'),
+  password('cookies.kuaishou', '快手 Cookie', '登录 https://www.kuaishou.com/new-reco 获取请求头中的 Cookie'),
+  password('cookies.xiaohongshu', '小红书 Cookie', '登录 https://www.xiaohongshu.com/ 获取请求头中的 Cookie'),
+  ...CONFIG_FIELDS.cookies.map(field => hidden(`${COOKIE_VERSION_FIELD}.${field}`)),
+  hidden(COOKIE_PAGE_TOKEN_FIELD),
 
   divider('全局开关'),
   sw('app.videotool', '总开关', '视频解析工具总开关，修改后重启生效'),
@@ -586,8 +653,31 @@ export function supportGuoba() {
       async setConfigData(data, { Result }) {
         try {
           const touched = new Set()
+          const updates = normalizeGuobaConfigData(data)
+          const submittedVersions = Object.fromEntries(
+            CONFIG_FIELDS.cookies.map(field => [field, getSubmittedCookieVersion(data, field)])
+          )
+          const cookieConflicts = getCookieOverwriteConflicts({
+            pageToken: typeof data?.[COOKIE_PAGE_TOKEN_FIELD] === 'string' ? data[COOKIE_PAGE_TOKEN_FIELD] : 'missing',
+            submittedVersions,
+            currentCookies: Config.cookies,
+            cookieUpdates: updates.cookies
+          })
 
-          for (const [name, value] of Object.entries(normalizeGuobaConfigData(data))) {
+          if (cookieConflicts.length) {
+            const labels = {
+              douyin: '抖音',
+              bilibili: 'B站',
+              kuaishou: '快手',
+              xiaohongshu: '小红书'
+            }
+            const platforms = cookieConflicts.map(field => labels[field] || field).join('、')
+            return Result.error(
+              `${platforms} Cookie 已在本页面打开后发生变化，本次未保存。确认仍要用当前输入覆盖，请在2分钟内再次点击保存。`
+            )
+          }
+
+          for (const [name, value] of Object.entries(updates)) {
             if (!Config.saveGuobaConfig(name, value, DEPRECATED_FIELDS[name])) {
               throw new Error(`配置模块 ${name} 保存失败`)
             }
