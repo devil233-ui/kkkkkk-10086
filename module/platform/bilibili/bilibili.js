@@ -805,7 +805,9 @@ export class Bilibili extends Base {
       }
     } catch (e) {
       if (Number(e?.code) === -352) throw e
-      logger.warn(`Bilibili解析错误：${e}`)
+      const code = e?.code == null ? '' : ` [code=${e.code}]`
+      const detail = e?.stack || e?.message || String(e)
+      logger.warn(`Bilibili解析错误${code}：${detail}`)
       return false
     }
   }
