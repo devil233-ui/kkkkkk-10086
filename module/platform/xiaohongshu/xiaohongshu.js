@@ -7,6 +7,7 @@ import { processImageUrl } from '../../utils/ImageHelper.js'
 import common from '../../../../../lib/common/common.js'
 import { buildLivePhotoMessages, buildLivePhotoTipMessage, pickXiaohongshuImageUrl } from './livePhoto.js'
 import { buildXiaohongshuEmojiList, buildXiaohongshuText } from './comments.js'
+import { fetchXiaohongshuCommentsWithBrowser } from './browserComments.js'
 
 const buildShareUrl = (data) => `https://www.xiaohongshu.com/discovery/item/${data.note_id}${data.xsec_token ? `?xsec_token=${data.xsec_token}` : ''}`
 
@@ -177,7 +178,22 @@ export class Xiaohongshu extends Base {
         note_id: data.note_id,
         xsec_token: data.xsec_token || ''
       })
-      const comments = commentData?.data?.data?.comments || []
+      let comments = commentData?.data?.data?.comments
+      const expectedCommentCount = Number(card.interact_info?.comment_count || 0)
+      const apiFailed = commentData?.success === false || Number(commentData?.code) !== 200
+      const needsBrowserFallback = apiFailed || !Array.isArray(comments) || (comments.length === 0 && expectedCommentCount > 0)
+
+      if (needsBrowserFallback) {
+        const apiError = commentData?.error?.errorDescription || commentData?.message || '响应结构异常'
+        logger.warn(`[小红书] 评论 API 获取失败，使用云崽浏览器回退: ${apiError}`)
+        comments = await fetchXiaohongshuCommentsWithBrowser({
+          renderer: this.e.runtime?.puppeteer,
+          cookie: Config.cookies.xiaohongshu,
+          noteId: data.note_id,
+          xsecToken: data.xsec_token || ''
+        })
+      }
+
       if (!comments.length) {
         await this.e.reply('这个笔记没有评论 ~')
       } else {
