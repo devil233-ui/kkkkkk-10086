@@ -2,9 +2,13 @@ import sharp from 'sharp'
 import Version from './Version.js'
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+export const DEFAULT_MAX_WATERMARK_PIXELS = 4_000_000
 let watermarkModulePromise
 let watermarkLoadWarned = false
-const logWarn = message => globalThis.logger?.warn?.(message) || console.warn(message)
+const logWarn = message => {
+  if (globalThis.logger?.warn) globalThis.logger.warn(message)
+  else console.warn(message)
+}
 
 const isPng = buffer => buffer.length >= 8 && buffer.subarray(0, 8).equals(PNG_SIGNATURE)
 
@@ -53,12 +57,21 @@ export const buildWatermarkText = () => JSON.stringify({
  * 将隐水印嵌入图片。输入非 PNG 时先转换为 PNG。
  * @param {Buffer|Uint8Array|string} image 图片数据
  * @param {string} watermarkText 水印文本
+ * @param {{maxPixels?: number}} [options] 水印处理限制
  * @returns {Promise<Buffer|null>}
  */
-export const embedWatermark = async (image, watermarkText) => {
+export const embedWatermark = async (image, watermarkText, options = {}) => {
   const input = toImageBuffer(image)
   if (!input) return null
   try {
+    const maxPixels = Number(options.maxPixels ?? DEFAULT_MAX_WATERMARK_PIXELS)
+    const metadata = await sharp(input).metadata()
+    const pixels = Number(metadata.width || 0) * Number(metadata.height || 0)
+    if (maxPixels > 0 && pixels > maxPixels) {
+      logWarn(`[Render] 图片 ${metadata.width}x${metadata.height} 超过隐水印安全上限，保留原图以避免内存峰值`)
+      return null
+    }
+
     const embedWatermarkToPngBytes = await getWatermarkEncoder()
     if (!embedWatermarkToPngBytes) return null
     const pngBuffer = isPng(input) ? input : await sharp(input).png().toBuffer()
@@ -80,11 +93,10 @@ export const embedWatermark = async (image, watermarkText) => {
  */
 export const applyWatermarkToImages = async (images, watermarkText) => {
   if (!Array.isArray(images)) return images
-  const result = []
-  for (const image of images) {
+  for (const [index, image] of images.entries()) {
     const payload = getImagePayload(image)
     const watermarked = await embedWatermark(payload, watermarkText)
-    result.push(watermarked ? setImagePayload(image, watermarked) : image)
+    if (watermarked) images[index] = setImagePayload(image, watermarked)
   }
-  return result
+  return images
 }

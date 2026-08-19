@@ -1,6 +1,7 @@
 import { Base, baseHeaders, Common, Config, downloadFile, mergeFile, Render, uploadFile, Version, processImageUrl } from '../../utils/index.js'
 import { bilibiliProcessVideos, cover, generateDecorationCard, getBilibiliDash, getBilibiliPayload, getvideosize, replacetext } from './bilibili.js'
 import { formatBilibiliArticleBody } from './article.js'
+import { sendBilibiliCard } from './cardDelivery.js'
 import { DynamicType, MajorType } from '@ikenxuan/amagi'
 import { buildLivePhotoMessages as buildCommonLivePhotoMessages, buildLivePhotoTipMessage } from '../common/livePhoto.js'
 import { bilibiliDB, cleanOldDynamicCache } from '../../db/index.js'
@@ -51,6 +52,28 @@ const CARD_SEND_TIMEOUT = 30_000
 const MEDIA_SEND_TIMEOUT = 180_000
 let activePushTask = null
 let activePushStartedAt = 0
+const pendingBilibiliPushes = new Set()
+
+const getBilibiliPushKey = (dynamicId, hostMid, groupId) =>
+  JSON.stringify([String(dynamicId), String(hostMid), String(groupId)])
+
+const releaseBilibiliPushTargets = (dynamicId, pushItem) => {
+  for (const target of pushItem?.targets || []) {
+    pendingBilibiliPushes.delete(getBilibiliPushKey(dynamicId, pushItem.host_mid, target.groupId))
+  }
+}
+
+const isBilibiliSendTimeout = (error) => {
+  const errorText = [error?.message, error?.name, error?.msg, error?.wording]
+    .filter(Boolean)
+    .join(' ')
+  const requestAction = error?.request?.action || error?.error?.request?.action
+  const retcode = error?.retcode ?? error?.error?.retcode
+
+  return error?.code === 'ETIMEDOUT' ||
+    (requestAction === 'send_msg' && (error?.timeout || retcode === 1200 || /timeout|timed out|超时/i.test(errorText))) ||
+    (/timeout|timed out|超时/i.test(errorText) && /sendMsg|send_msg/i.test(errorText))
+}
 
 const DEFAULT_BILIBILI_PUSH_TYPES = ['video', 'draw', 'word', 'live', 'forward', 'article']
 const BILIBILI_PUSH_TYPE_LABELS = {
@@ -166,6 +189,7 @@ export class Bilibilipush extends Base {
         return await this.getdata(pushdata)
       }
     } catch (error) {
+      pendingBilibiliPushes.clear()
       logger.error(error)
     }
   }
@@ -524,6 +548,7 @@ export class Bilibilipush extends Base {
 
         if (!skip && (!img || img === false || (Array.isArray(img) && img.length === 0))) {
           logger.warn(`[Bilibili Push] 动态${dynamicId}渲染失败，不写入缓存，等待下一轮重试`)
+          releaseBilibiliPushTargets(dynamicId, dynamicItem)
           continue
         }
 
@@ -533,6 +558,7 @@ export class Bilibilipush extends Base {
             const { groupId, botId } = target
             if (skip) {
               await bilibiliDB?.addDynamicCache(dynamicId, dynamicItem.host_mid, groupId, dynamicItem.dynamic_type)
+              await bilibiliDB?.deleteDynamicPushProgress(dynamicId, dynamicItem.host_mid, groupId)
               continue
             }
 
@@ -542,29 +568,18 @@ export class Bilibilipush extends Base {
               continue
             }
 
-            let status
             if (!skip) {
-              try {
-                status = img && await Common.withTimeout(
-                  () => group.sendMsg(img),
-                  CARD_SEND_TIMEOUT,
-                  'B站动态卡片 sendMsg'
-                )
-              } catch (sendError) {
-                const errStr = JSON.stringify(sendError) + String(sendError)
-                if (sendError?.code === 'ETIMEDOUT' || (errStr.toLowerCase().includes('timeout') && errStr.includes('sendMsg'))) {
-                  logger.warn(`[Bilibili Push] 动态${dynamicId}卡片发送超时，大概率已送达，写入去重缓存后继续处理`)
-                  status = { message_id: 'send_timeout' }
-                } else {
-                  throw sendError
-                }
-              }
-              if (!status?.message_id) {
-                logger.warn(`[Bilibili Push] 动态卡片未返回 message_id，按已提交处理: ${dynamicId}`)
-                status = { message_id: 'missing_result' }
-              }
-
-              await bilibiliDB?.addDynamicCache(dynamicId, dynamicItem.host_mid, groupId, dynamicItem.dynamic_type)
+              const cardResult = await sendBilibiliCard({
+                images: img,
+                dynamicId,
+                hostMid: dynamicItem.host_mid,
+                groupId,
+                sendPage: page => group.sendMsg(page),
+                withTimeout: (...args) => Common.withTimeout(...args),
+                timeoutMs: CARD_SEND_TIMEOUT,
+                progressStore: bilibiliDB,
+                logger
+              })
               const parseOptions = getDynamicParseOptions(dynamicItem)
               if (parseOptions.video || parseOptions.draw) {
                 switch (dynamicItem.dynamic_type) {
@@ -603,12 +618,9 @@ export class Bilibilipush extends Base {
                         dycrad.bvid || ''
                       )
                       if ((Config.upload.usefilelimit && Number(videoSize) > Number(Config.upload.filelimit)) && !Config.upload.compress) {
-                        Bot?.[botId]?.pickGroup(groupId) && await Bot?.[botId]?.pickGroup(groupId)?.sendMsg(
-                          [
-                            `设定的最大上传大小为 ${Config.upload.filelimit}MB\n当前解析到的视频大小为 ${Number(videoSize)}MB\n视频太大了，还是去B站看吧~`,
-                            segment.reply(status.message_id)
-                          ]
-                        )
+                        const notice = [`设定的最大上传大小为 ${Config.upload.filelimit}MB\n当前解析到的视频大小为 ${Number(videoSize)}MB\n视频太大了，还是去B站看吧~`]
+                        if (cardResult.messageId) notice.push(segment.reply(cardResult.messageId))
+                        await group.sendMsg(notice)
                         break
                       }
                       logger.mark(`当前处于自动推送状态，解析到的视频大小为 ${logger.yellow(Number(videoSize))} MB`)
@@ -628,46 +640,51 @@ export class Bilibilipush extends Base {
                         }
                       )
 
-                      if (mp4File.filepath && mp3File.filepath) {
-                        await mergeFile('二合一（视频 + 音频）', {
-                          path: mp4File.filepath,
-                          path2: mp3File.filepath,
-                          resultPath: Common.tempDri.video + `Bil_Result_${infoData.data.data.bvid}.mp4`,
-                          callback: async (/** @type {boolean} */ success, /** @type {string} */ resultPath) => {
-                            if (success) {
-                              const filePath = Common.tempDri.video + `tmp_${Date.now()}.mp4`
-                              fs.renameSync(resultPath, filePath)
-                              logger.mark(`视频文件重命名完成: ${resultPath.split('/').pop()} -> ${filePath.split('/').pop()}`)
-                              logger.mark('正在尝试删除缓存文件')
-                              await Common.removeFile(mp4File.filepath, true)
-                              await Common.removeFile(mp3File.filepath, true)
+                      if (!mp4File.filepath || !mp3File.filepath) {
+                        throw new Error(`动态${dynamicId}的视频或音频下载失败`)
+                      }
 
-                              const stats = fs.statSync(filePath)
-                              const fileSizeInMB = Number((stats.size / (1024 * 1024)).toFixed(2))
-                              if (fileSizeInMB > (Config.upload?.groupfilevalue || 100)) {
-                                // 使用文件上传
-                                return await uploadFile(
-                                  this.e,
-                                  { filepath: filePath, totalBytes: fileSizeInMB, originTitle: `${infoData.data.data.desc.substring(0, 50).replace(/[\\/:\\*\\?"<>\\|\r\n\s]/g, ' ')}` },
-                                  '',
-                                  { useGroupFile: true, active: true, activeOption: { group_id: groupId, uin: botId } }
-                                )
-                              } else {
-                                /** 因为本地合成，没有视频直链 */
-                                return await uploadFile(
-                                  this.e,
-                                  { filepath: filePath, totalBytes: fileSizeInMB },
-                                  '',
-                                  { active: true, activeOption: { group_id: groupId, uin: botId } }
-                                )
-                              }
+                      let videoDelivered = false
+                      const mergeResult = await mergeFile('二合一（视频 + 音频）', {
+                        path: mp4File.filepath,
+                        path2: mp3File.filepath,
+                        resultPath: Common.tempDri.video + `Bil_Result_${infoData.data.data.bvid}.mp4`,
+                        callback: async (/** @type {boolean} */ success, /** @type {string} */ resultPath) => {
+                          if (success) {
+                            const filePath = Common.tempDri.video + `tmp_${Date.now()}.mp4`
+                            fs.renameSync(resultPath, filePath)
+                            logger.mark(`视频文件重命名完成: ${resultPath.split('/').pop()} -> ${filePath.split('/').pop()}`)
+                            logger.mark('正在尝试删除缓存文件')
+                            await Common.removeFile(mp4File.filepath, true)
+                            await Common.removeFile(mp3File.filepath, true)
+
+                            const stats = fs.statSync(filePath)
+                            const fileSizeInMB = Number((stats.size / (1024 * 1024)).toFixed(2))
+                            if (fileSizeInMB > (Config.upload?.groupfilevalue || 100)) {
+                              // 使用文件上传
+                              videoDelivered = await uploadFile(
+                                this.e,
+                                { filepath: filePath, totalBytes: fileSizeInMB, originTitle: `${infoData.data.data.desc.substring(0, 50).replace(/[\\/:\\*\\?"<>\\|\r\n\s]/g, ' ')}` },
+                                '',
+                                { useGroupFile: true, active: true, activeOption: { group_id: groupId, uin: botId } }
+                              )
                             } else {
-                              await Common.removeFile(mp4File.filepath, true)
-                              await Common.removeFile(mp3File.filepath, true)
-                              return true
+                              /** 因为本地合成，没有视频直链 */
+                              videoDelivered = await uploadFile(
+                                this.e,
+                                { filepath: filePath, totalBytes: fileSizeInMB },
+                                '',
+                                { active: true, activeOption: { group_id: groupId, uin: botId } }
+                              )
                             }
+                          } else {
+                            await Common.removeFile(mp4File.filepath, true)
+                            await Common.removeFile(mp3File.filepath, true)
                           }
-                        })
+                        }
+                      })
+                      if (!mergeResult || typeof mergeResult !== 'object' || !mergeResult.status || !videoDelivered) {
+                        throw new Error(`动态${dynamicId}的视频合成或发送失败`)
                       }
                     }
                     break
@@ -717,37 +734,41 @@ export class Bilibilipush extends Base {
                         if (item?.filepath) await Common.removeFile(item.filepath, true)
                       }
                     }
-                    if (!imgArray.length) return false
+                    if (!imgArray.length) {
+                      throw new Error(`动态${dynamicId}未生成可发送的图集`)
+                    }
                     const forwardMsg = Version.BotName === 'Miao-Yunzai' ?
                       Bot?.makeForwardMsg(imgArray.map(img => ({
                         user_id: 2854196310,
                         message: img
                       }))) :
                       common?.makeForwardMsg(Bot?.[botId], imgArray, '动态图片')
-                    // 如果bot不存在或群组不存在,则默认message_id为1,防止bot上线发一堆消息
-                    if (forwardMsg) {
-                      await Common.withTimeout(
-                        () => group.sendMsg(forwardMsg),
-                        MEDIA_SEND_TIMEOUT,
-                        'B站图集 sendMsg'
-                      )
-                    }
+                    if (!forwardMsg) throw new Error(`动态${dynamicId}图集转发消息构造失败`)
+                    await Common.withTimeout(
+                      () => group.sendMsg(forwardMsg),
+                      MEDIA_SEND_TIMEOUT,
+                      'B站图集 sendMsg'
+                    )
                     break
                   }
                 }
               }
+              await bilibiliDB?.addDynamicCache(dynamicId, dynamicItem.host_mid, groupId, dynamicItem.dynamic_type)
+              await bilibiliDB?.deleteDynamicPushProgress(dynamicId, dynamicItem.host_mid, groupId)
             }
           } catch (error) {
-            const errStr = JSON.stringify(error) + String(error)
-            if (error?.code === 'ETIMEDOUT' || (errStr.toLowerCase().includes('timeout') && errStr.includes('sendMsg'))) {
-              logger.warn(`[Bilibili Push] 动态${dynamicId}的附加媒体发送超时，卡片已去重，不再重复推送`)
+            if (isBilibiliSendTimeout(error)) {
+              logger.warn(`[Bilibili Push] 动态${dynamicId}发送结果未知，不写入长期缓存，保留已确认页进度等待重试`)
             } else {
-              logger.error(`[Bilibili Push] 发送${dynamicId}失败:`, error)
+              logger.error(`[Bilibili Push] 发送${dynamicId}失败，未写入长期缓存，等待重试:`, error)
             }
+          } finally {
+            pendingBilibiliPushes.delete(getBilibiliPushKey(dynamicId, dynamicItem.host_mid, target.groupId))
           }
         }
       }
     } catch (e) {
+      pendingBilibiliPushes.clear()
       logger.error('推送动态列表失败', e)
       return false
     }
@@ -859,9 +880,11 @@ export class Bilibilipush extends Base {
       for (const target of pushItem.targets) {
         // 检查该动态是否已经推送给该群组
         const isPushed = await bilibiliDB?.isDynamicPushed(dynamicId, pushItem.host_mid, target.groupId)
+        const pendingKey = getBilibiliPushKey(dynamicId, pushItem.host_mid, target.groupId)
 
         // 如果未被推送过，则保留此目标
-        if (!isPushed) {
+        if (!isPushed && !pendingBilibiliPushes.has(pendingKey)) {
+          pendingBilibiliPushes.add(pendingKey)
           newTargets.push(target)
         }
       }
@@ -1009,35 +1032,42 @@ export class Bilibilipush extends Base {
     const currentGroupId = this.e.group_id || this.e.groupId || ''
     const currentBotId = this.e.self_id || this.e.selfId || ''
 
-    // 如果不是全部强制推送，需要过滤数据
-    if (!this.e.msg.includes('全部')) {
-      // 获取当前群组订阅的所有UP主
-      const subscriptions = await bilibiliDB?.getGroupSubscriptions(currentGroupId)
-      const subscribedUids = subscriptions?.map(sub => sub.host_mid) || []
+    try {
+      // 如果不是全部强制推送，需要过滤数据
+      if (!this.e.msg.includes('全部')) {
+        // 获取当前群组订阅的所有UP主
+        const subscriptions = await bilibiliDB?.getGroupSubscriptions(currentGroupId)
+        const subscribedUids = subscriptions?.map(sub => sub.host_mid) || []
 
-      /** 创建一个新的推送列表，只包含当前群组订阅的UP主的动态 */
-      /** @type {WillBePushList} */
-      const filteredData = /** @type {WillBePushList} */ ({})
+        /** 创建一个新的推送列表，只包含当前群组订阅的UP主的动态 */
+        /** @type {WillBePushList} */
+        const filteredData = /** @type {WillBePushList} */ ({})
 
-      for (const dynamicId in data) {
-        // 检查该动态的UP主是否被当前群组订阅
-        if (data[dynamicId] && subscribedUids.includes(data[dynamicId].host_mid)) {
-          // 复制该动态到过滤后的列表，并将目标设置为当前群组
-          filteredData[dynamicId] = {
-            ...data[dynamicId],
-            targets: [{
-              groupId: currentGroupId,
-              botId: currentBotId
-            }]
+        for (const dynamicId in data) {
+          // 检查该动态的UP主是否被当前群组订阅
+          if (data[dynamicId] && subscribedUids.includes(data[dynamicId].host_mid)) {
+            // 复制该动态到过滤后的列表，并将目标设置为当前群组
+            filteredData[dynamicId] = {
+              ...data[dynamicId],
+              targets: [{
+                groupId: currentGroupId,
+                botId: currentBotId
+              }]
+            }
           }
         }
-      }
 
-      // 使用过滤后的数据进行推送
-      await this.getdata(filteredData)
-    } else {
-      // 全部强制推送，保持原有逻辑
-      await this.getdata(data)
+        // 使用过滤后的数据进行推送
+        await this.getdata(filteredData)
+      } else {
+        // 全部强制推送，保持原有逻辑
+        await this.getdata(data)
+      }
+    } finally {
+      // 未进入本次强制推送的目标不能长期占用 pending 状态
+      for (const dynamicId in data) {
+        releaseBilibiliPushTargets(dynamicId, data[dynamicId])
+      }
     }
   }
 

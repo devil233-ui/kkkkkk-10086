@@ -103,6 +103,20 @@ export class BilibiliDBBase {
         UNIQUE(dynamic_id, host_mid, groupId)
       )`,
 
+      // 创建动态卡片页级发送进度表
+      `CREATE TABLE IF NOT EXISTS DynamicPushProgress (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        dynamic_id TEXT NOT NULL,
+        host_mid INTEGER NOT NULL,
+        groupId TEXT NOT NULL,
+        confirmed_pages INTEGER NOT NULL DEFAULT 0,
+        total_pages INTEGER NOT NULL DEFAULT 0,
+        last_message_id TEXT,
+        createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+        updatedAt TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(dynamic_id, host_mid, groupId)
+      )`,
+
       // 创建过滤词表
       `CREATE TABLE IF NOT EXISTS FilterWords (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -314,6 +328,10 @@ export class BilibiliDBBase {
       'DELETE FROM DynamicCaches WHERE groupId = ? AND host_mid = ?',
       [groupId, host_mid]
     )
+    await this.runQuery(
+      'DELETE FROM DynamicPushProgress WHERE groupId = ? AND host_mid = ?',
+      [groupId, host_mid]
+    )
     return result.changes > 0
   }
 
@@ -369,6 +387,65 @@ export class BilibiliDBBase {
       [dynamic_id, host_mid, groupId]
     )
     return (result?.count || 0) > 0
+  }
+
+  /**
+   * 获取尚未完整完成的动态卡片发送进度。
+   * @param {string} dynamic_id 动态ID
+   * @param {number} host_mid B站用户UID
+   * @param {string} groupId 群组ID
+   * @returns {Promise<{confirmed_pages: number, total_pages: number, last_message_id?: string}|undefined>}
+   */
+  async getDynamicPushProgress(dynamic_id, host_mid, groupId) {
+    return await this.getQuery(
+      'SELECT confirmed_pages, total_pages, last_message_id FROM DynamicPushProgress WHERE dynamic_id = ? AND host_mid = ? AND groupId = ?',
+      [dynamic_id, host_mid, groupId]
+    )
+  }
+
+  /**
+   * 保存已获得明确成功响应的卡片页数。
+   * @param {string} dynamic_id 动态ID
+   * @param {number} host_mid B站用户UID
+   * @param {string} groupId 群组ID
+   * @param {number} confirmed_pages 已确认页数
+   * @param {number} total_pages 本轮总页数
+   * @param {string} [last_message_id=''] 最后一个明确返回的消息ID
+   * @returns {Promise<void>}
+   */
+  async saveDynamicPushProgress(dynamic_id, host_mid, groupId, confirmed_pages, total_pages, last_message_id = '') {
+    const now = (/* @__PURE__ */ new Date()).toISOString()
+    const existing = await this.getDynamicPushProgress(dynamic_id, host_mid, groupId)
+    if (existing) {
+      await this.runQuery(
+        `UPDATE DynamicPushProgress
+         SET confirmed_pages = ?, total_pages = ?, last_message_id = ?, updatedAt = ?
+         WHERE dynamic_id = ? AND host_mid = ? AND groupId = ?`,
+        [confirmed_pages, total_pages, last_message_id, now, dynamic_id, host_mid, groupId]
+      )
+      return
+    }
+
+    await this.runQuery(
+      `INSERT INTO DynamicPushProgress
+       (dynamic_id, host_mid, groupId, confirmed_pages, total_pages, last_message_id, createdAt, updatedAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [dynamic_id, host_mid, groupId, confirmed_pages, total_pages, last_message_id, now, now]
+    )
+  }
+
+  /**
+   * 删除已完成动态的临时发送进度。
+   * @param {string} dynamic_id 动态ID
+   * @param {number} host_mid B站用户UID
+   * @param {string} groupId 群组ID
+   * @returns {Promise<void>}
+   */
+  async deleteDynamicPushProgress(dynamic_id, host_mid, groupId) {
+    await this.runQuery(
+      'DELETE FROM DynamicPushProgress WHERE dynamic_id = ? AND host_mid = ? AND groupId = ?',
+      [dynamic_id, host_mid, groupId]
+    )
   }
 
   /**
@@ -1013,6 +1090,10 @@ export class BilibiliDBBase {
    */
   async cleanOldDynamicCache(days = 7) {
     const cutoffDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
+    await this.runQuery(
+      'DELETE FROM DynamicPushProgress WHERE datetime(updatedAt) < datetime(?)',
+      [cutoffDate.toISOString()]
+    )
     const countResult = await this.getQuery(
       'SELECT COUNT(*) as count FROM DynamicCaches WHERE datetime(createdAt) < datetime(?)',
       [cutoffDate.toISOString()]
