@@ -285,8 +285,11 @@ const pickFields = (value: unknown, fields: string[]): Record<string, unknown> =
 
 const sanitizeGuobaModule = (name: ConfigName, value: Record<string, unknown>): Record<string, unknown> => {
   const result = { ...value }
-  if (name === 'bilibili' && isPlainRecord(result.push)) {
-    result.push = { ...result.push }
+  if (name === 'bilibili' && Object.prototype.hasOwnProperty.call(result, 'push')) {
+    // 旧锅巴页面可能把已改版的 push 域提交成不完整对象、null 或布尔值；合并当前有效对象，避免整域被覆盖。
+    const currentPush = isPlainRecord(Config.bilibili?.push) ? Config.bilibili.push : {}
+    const submittedPush = isPlainRecord(result.push) ? result.push : {}
+    result.push = { ...currentPush, ...submittedPush }
     delete (result.push as Record<string, unknown>).dynamicTypes
   }
   return result

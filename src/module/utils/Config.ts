@@ -342,10 +342,7 @@ export class Cfg {
 
     const reader = new YamlReader(file)
     for (const [key, item] of Object.entries(value)) reader.document.set(key, item)
-    for (const key of deprecatedKeys) {
-      if (key.includes('.')) reader.document.deleteIn(key.split('.'))
-      else reader.document.delete(key)
-    }
+    for (const key of deprecatedKeys) deleteDocumentPath(reader.document, key)
 
     const success = reader.write()
     if (success) delete this.config[`${type}.${name}`]
@@ -555,6 +552,18 @@ export class Cfg {
     if (success) delete this.config[`${type}.${name}`]
     return success
   }
+}
+
+/** 旧键清理必须容忍旧页面把父级配置提交成标量，不能让清理动作反过来阻断正常保存。 */
+const deleteDocumentPath = (document: YAML.Document, key: string): void => {
+  const path = key.split('.')
+  if (path.length === 1) {
+    document.delete(key)
+    return
+  }
+
+  const parent = document.getIn(path.slice(0, -1), true) as { delete?: unknown } | undefined
+  if (typeof parent?.delete === 'function') document.deleteIn(path)
 }
 
 let configInstance: ConfigService | undefined
