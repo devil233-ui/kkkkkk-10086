@@ -12,5 +12,15 @@ resources/template/douyin/html/user_worklist.html
 amagi/node_modules/*
 .vscode/
 test/
+/tests/
 .eslintrc
 .eslintcache
+/lib/
+/.generated/
+/.artifacts/
+/.ktr/
+/temp/
+.claude/
+graphify-out/
+.graphifyignore
+AGENTS.md

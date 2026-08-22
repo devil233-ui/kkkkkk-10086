@@ -1,0 +1,25 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "noUncheckedIndexedAccess": false,
+    "baseUrl": ".",
+    "types": ["node", "react", "react-dom", "trss-yunzai"],
+    "paths": {
+      "@/*": ["./src/*"],
+      "@karinjs/template-react": ["./src/template-sdk/index.ts"],
+      "@kkk/richtext": ["./src/module/utils/richtext/index.ts"]
+    }
+  },
+  "include": [
+    "src/**/*.ts",
+    "tests/**/*.ts",
+    "vitest.config.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "lib"
+  ]
+}

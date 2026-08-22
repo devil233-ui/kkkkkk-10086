@@ -1,0 +1,355 @@
+import type { AxiosRequestConfig } from 'axios'
+import { Base, downloadVideo, type BaseEvent } from '@/module/utils/Base'
+import { baseHeaders } from '@/module/utils/Networks'
+import { Render } from '@/module/utils/Render'
+import Config from '@/module/utils/Config'
+import Common from '@/module/utils/Common'
+import { processImageUrl } from '@/module/utils/ImageHelper'
+import common from '@/runtime/host/common'
+import {
+  buildLivePhotoMessages,
+  buildLivePhotoTipMessage,
+  pickXiaohongshuImageUrl,
+  type XiaohongshuImageItem,
+  type XiaohongshuLiveVideo,
+  type XiaohongshuStreamData
+} from './livePhoto.js'
+import {
+  buildNoteStatistics,
+  buildRenderComments,
+  buildXiaohongshuEmojiList,
+  buildXiaohongshuRichText,
+  formatTime,
+  getCommentLimit,
+  type XiaohongshuComment,
+  type XiaohongshuEmoji,
+  type XiaohongshuUserInfo
+} from './comments.js'
+import type { FileInfo } from '@/types/platform'
+import type { XiaohongshuNoteId } from './getid.js'
+import { getXiaohongshuData } from './api.js'
+import { buildXiaohongshuShareUrl } from './link.js'
+import { fetchXiaohongshuCommentsWithBrowser, type XiaohongshuBrowserRenderer } from './browserComments.js'
+
+/** 笔记卡片中被解析逻辑读取的字段 */
+interface XiaohongshuNoteCard {
+  title?: string
+  desc?: string
+  note_id?: string
+  time?: number | string
+  ip_location?: string
+  interact_info?: Record<string, unknown>
+  user?: XiaohongshuUserInfo
+  image_list?: XiaohongshuImageItem[]
+  video?: {
+    url_default?: string
+    image?: { url_default?: string }
+    cover?: { url_default?: string }
+    media?: { stream?: XiaohongshuStreamData }
+  }
+}
+
+interface NoteDetailResponse {
+  success?: boolean
+  message?: string
+  data?: { data?: { items?: Array<{ note_card?: XiaohongshuNoteCard }> } }
+}
+
+export interface NoteCommentsResponse {
+  success?: boolean
+  code?: number
+  message?: string
+  error?: { errorDescription?: string }
+  data?: {
+    data?: {
+      comments?: XiaohongshuComment[]
+      cursor?: string
+      has_more?: boolean
+    }
+  }
+}
+
+const buildShareUrl = (data: XiaohongshuNoteId): string =>
+  buildXiaohongshuShareUrl(data.note_id, data.xsec_token)
+
+const getNoteCard = (noteResponse: NoteDetailResponse | undefined): XiaohongshuNoteCard | undefined =>
+  noteResponse?.data?.data?.items?.[0]?.note_card
+
+const normalizeSendContent = (): string[] =>
+  Array.isArray(Config.xiaohongshu.sendContent) ? Config.xiaohongshu.sendContent : []
+
+export interface XiaohongshuCommentRequest {
+  typeMode: 'strict'
+  note_id: string
+  cursor?: string
+  xsec_token?: string
+}
+
+export type XiaohongshuCommentFetcher = (
+  options: XiaohongshuCommentRequest
+) => Promise<NoteCommentsResponse>
+
+/**
+ * 按配置数量分页获取小红书评论，避免只取首屏导致评论数量不足。
+ * fetchComments 参数用于隔离 API wrapper，也便于在不触碰真实网络的情况下验证分页仲裁。
+ */
+export const fetchConfiguredNoteComments = async (
+  data: XiaohongshuNoteId,
+  fetchComments: XiaohongshuCommentFetcher = async options =>
+    await getXiaohongshuData('评论数据', options as unknown as Record<string, unknown>) as NoteCommentsResponse
+): Promise<NoteCommentsResponse> => {
+  const targetCount = getCommentLimit()
+  const firstPage = await fetchComments({
+    typeMode: 'strict',
+    note_id: data.note_id,
+    xsec_token: data.xsec_token || ''
+  })
+  const firstPageData = firstPage.data?.data || {}
+  const comments = [...(firstPageData.comments || [])]
+  let cursor = firstPageData.cursor
+  let hasMore = firstPageData.has_more
+  const seenCursors = new Set<string>()
+
+  while (comments.length < targetCount && hasMore && cursor && !seenCursors.has(cursor)) {
+    seenCursors.add(cursor)
+    const nextPage = await fetchComments({
+      typeMode: 'strict',
+      note_id: data.note_id,
+      cursor,
+      xsec_token: data.xsec_token || ''
+    })
+    const nextPageData = nextPage.data?.data || {}
+    comments.push(...(nextPageData.comments || []))
+    cursor = nextPageData.cursor
+    hasMore = nextPageData.has_more
+  }
+
+  return {
+    ...firstPage,
+    data: {
+      ...firstPage.data,
+      data: {
+        ...firstPageData,
+        comments,
+        cursor,
+        has_more: hasMore
+      }
+    }
+  }
+}
+
+const collectVideoStreams = (streamData: XiaohongshuStreamData | undefined): XiaohongshuLiveVideo[] => {
+  const codecPriority = ['h265', 'h264', 'av1', 'h266'] as const
+  const streams: XiaohongshuLiveVideo[] = []
+  for (const codec of codecPriority) {
+    const codecStreams = streamData?.[codec]
+    if (Array.isArray(codecStreams)) streams.push(...codecStreams)
+  }
+  return streams
+}
+
+const getQualityLevel = (stream: XiaohongshuLiveVideo): string => {
+  const pixels = (stream.width || 0) * (stream.height || 0)
+  if (pixels >= 3840 * 2160) return '4k'
+  if (pixels >= 2560 * 1440) return '2k'
+  if (pixels >= 1920 * 1080) return '1080p'
+  if (pixels >= 1280 * 720) return '720p'
+  return '540p'
+}
+
+const selectVideoStream = (streamData: XiaohongshuStreamData | undefined): XiaohongshuLiveVideo | null | undefined => {
+  const streams = collectVideoStreams(streamData)
+  if (!streams.length) return null
+
+  const quality = Config.xiaohongshu.videoQuality || '4k'
+  const qualityPriority = ['4k', '2k', '1080p', '720p', '540p']
+  const sorted = streams.sort((a, b) => (b.size || 0) - (a.size || 0))
+
+  if (quality === 'adapt') {
+    const limit = (Config.xiaohongshu.maxAutoVideoSize || 50) * 1024 * 1024
+    return sorted.find(stream => (stream.size || 0) <= limit) || sorted.at(-1)
+  }
+
+  const targetIndex = qualityPriority.indexOf(quality)
+  const fallbackOrder = targetIndex >= 0
+    ? [...qualityPriority.slice(targetIndex), ...qualityPriority.slice(0, targetIndex).reverse()]
+    : qualityPriority
+
+  for (const item of fallbackOrder) {
+    const stream = sorted.find(stream => getQualityLevel(stream) === item)
+    if (stream) return stream
+  }
+
+  return sorted[0]
+}
+
+export class Xiaohongshu extends Base {
+  type: string | undefined
+
+  constructor (e: ConstructorParameters<typeof Base>[0], iddata?: { type?: string }) {
+    super(e)
+    this.e = e
+    this.type = iddata?.type
+  }
+
+  async XiaohongshuHandler (data: XiaohongshuNoteId): Promise<boolean> {
+    if (!Config.cookies.xiaohongshu) {
+      await this.e!.reply!('我还没有小红书 Cookies，暂时无法解析')
+      return true
+    }
+
+    const sendContent = normalizeSendContent()
+    const noteData = await getXiaohongshuData('单个笔记数据', {
+      typeMode: 'strict',
+      note_id: data.note_id,
+      xsec_token: data.xsec_token
+    }) as NoteDetailResponse
+    const card = getNoteCard(noteData)
+    if (!card) {
+      throw new Error(noteData?.success === false
+        ? `小红书笔记获取失败: ${noteData.message || '未知错误'}`
+        : '小红书笔记数据为空')
+    }
+
+    let emojiData: XiaohongshuEmoji[] = []
+    if (sendContent.includes('info') || sendContent.includes('comment')) {
+      try {
+        const emojiList = await getXiaohongshuData('表情列表', { typeMode: 'strict' })
+        emojiData = buildXiaohongshuEmojiList(emojiList as Parameters<typeof buildXiaohongshuEmojiList>[0])
+      } catch (error: unknown) {
+        logger.debug(`[小红书] 获取表情列表失败，使用纯文本渲染: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+
+    if (sendContent.includes('info')) {
+      const noteInfoImg = await Render('xiaohongshu/noteInfo', {
+        title: card.title || '无标题',
+        desc: buildXiaohongshuRichText(card.desc, emojiData, [], { stripTopicMarker: true }),
+        statistics: buildNoteStatistics(card.interact_info),
+        note_id: card.note_id || data.note_id,
+        author: {
+          avatar: card.user?.avatar || card.user?.image || '',
+          nickname: card.user?.nickname || card.user?.nick_name || '未知用户',
+          user_id: card.user?.user_id || card.user?.id || ''
+        },
+        image_url: pickXiaohongshuImageUrl(card.image_list?.[0]) || card.video?.image?.url_default || card.video?.cover?.url_default || '',
+        time: formatTime(card.time),
+        ip_location: card.ip_location || '',
+        share_url: buildShareUrl(data),
+        image_list: card.video
+          ? [card.video.image?.url_default || card.video.cover?.url_default || pickXiaohongshuImageUrl(card.image_list?.[0]) || ''].filter(Boolean)
+          : (card.image_list || []).map(item => pickXiaohongshuImageUrl(item)).filter((item): item is string => Boolean(item)),
+        is_video: Boolean(card.video)
+      })
+      await this.e!.reply!(noteInfoImg)
+    }
+
+    if (sendContent.includes('comment')) {
+      let comments: XiaohongshuComment[] = []
+      let browserFallbackStarted = false
+      const fetchBrowserComments = async (): Promise<XiaohongshuComment[]> => {
+        browserFallbackStarted = true
+        return await fetchXiaohongshuCommentsWithBrowser({
+          renderer: (this.e as BaseEvent & { runtime?: { puppeteer?: XiaohongshuBrowserRenderer } })?.runtime?.puppeteer,
+          cookie: Config.cookies.xiaohongshu ?? undefined,
+          noteId: data.note_id,
+          xsecToken: data.xsec_token || ''
+        }) as XiaohongshuComment[]
+      }
+
+      try {
+        const commentData = await fetchConfiguredNoteComments(data)
+        comments = commentData?.data?.data?.comments || []
+        const expectedCommentCount = Number(card.interact_info?.comment_count || 0)
+        const apiFailed = commentData?.success === false || Number(commentData?.code) !== 200
+        const needsBrowserFallback = apiFailed || !Array.isArray(commentData?.data?.data?.comments) ||
+          (comments.length === 0 && expectedCommentCount > 0)
+
+        if (needsBrowserFallback) {
+          const apiError = commentData?.error?.errorDescription || commentData?.message || '响应结构异常'
+          logger.warn(`[小红书] 评论 API 获取失败，使用云崽浏览器回退: ${apiError}`)
+          comments = await fetchBrowserComments()
+        }
+      } catch (error: unknown) {
+        if (browserFallbackStarted) throw error
+        logger.warn(`[小红书] 评论 API 获取失败，使用云崽浏览器回退: ${error instanceof Error ? error.message : String(error)}`)
+        comments = await fetchBrowserComments()
+      }
+
+      if (!comments.length) {
+        await this.e!.reply!('这个笔记没有评论 ~')
+      } else {
+        const commentListImg = await Render('xiaohongshu/comment', {
+          Type: card.video ? '视频' : '图文',
+          CommentsData: buildRenderComments(comments, emojiData, card.note_id || data.note_id),
+          CommentLength: comments.length,
+          ImageLength: card.image_list?.length || 0,
+          share_url: buildShareUrl(data)
+        })
+        await this.e!.reply!(commentListImg)
+      }
+    }
+
+    if (!card.video && sendContent.includes('image')) {
+      const imageMessages: unknown[] = []
+      const tempFiles: FileInfo[] = []
+      let hasGeneratedLivePhoto = false
+
+      for (const [index, item] of (card.image_list || []).entries()) {
+        if (item?.live_photo && item?.stream) {
+          const livePhoto = await buildLivePhotoMessages(item, index)
+          tempFiles.push(...livePhoto.tempFiles)
+          hasGeneratedLivePhoto = hasGeneratedLivePhoto || livePhoto.generatedLivePhoto
+          if (livePhoto.messages.length > 0) {
+            imageMessages.push(...livePhoto.messages)
+            continue
+          }
+        }
+
+        const imageUrl = await processImageUrl(pickXiaohongshuImageUrl(item) ?? '', card.title || '小红书图片', index, {
+          Referer: 'https://www.xiaohongshu.com',
+          Cookie: Config.cookies.xiaohongshu
+        } as AxiosRequestConfig['headers'])
+        if (imageUrl) imageMessages.push(segment.image(imageUrl))
+      }
+
+      if (hasGeneratedLivePhoto) imageMessages.push(await buildLivePhotoTipMessage())
+
+      try {
+        if (imageMessages.length === 1) {
+          await this.e!.reply!(imageMessages[0])
+        } else if (imageMessages.length > 1) {
+          await this.e!.reply!(await common.makeForwardMsg(this.e, imageMessages, '小红书图集解析结果'))
+        }
+      } finally {
+        for (const item of tempFiles) {
+          if (item?.filepath) await Common.removeFile(item.filepath, true)
+        }
+      }
+    }
+
+    if (card.video && sendContent.includes('video')) {
+      const stream = selectVideoStream(card.video.media?.stream)
+      const videoUrl = stream?.master_url || card.video.url_default
+      if (!videoUrl) {
+        await this.e!.reply!('未找到可用的视频地址')
+        return true
+      }
+
+      await downloadVideo(this.e as Parameters<typeof downloadVideo>[0], {
+        video_url: videoUrl,
+        title: {
+          timestampTitle: `tmp_${Date.now()}.mp4`,
+          originTitle: `${card.title || '小红书视频'}.mp4`
+        },
+        headers: {
+          ...baseHeaders,
+          Referer: 'https://www.xiaohongshu.com',
+          Cookie: Config.cookies.xiaohongshu
+        } as AxiosRequestConfig['headers']
+      })
+    }
+
+    return true
+  }
+}
