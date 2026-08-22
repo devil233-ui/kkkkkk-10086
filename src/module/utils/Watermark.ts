@@ -48,6 +48,31 @@ export const readImageBytes = (image: ImageMessage): Buffer | null => toImageBuf
 /** 把新的图片字节写回消息段，保持原段的字段形状（file / data.file / data / base64:// 编码） */
 export const replaceImageBytes = (image: ImageMessage, payload: Buffer): ImageMessage => setImagePayload(image, payload)
 
+/**
+ * 把透明像素合成到固定底色，避免聊天软件或图片查看器用不同背景二次合成。
+ *
+ * 截图仍然先保留 alpha，圆角和阴影不会被宿主的 JPEG 分片逻辑提前破坏；这里只在
+ * 插件准备发送前固定最终像素，避免同一张图在缩略图和大图预览中出现不同主题色。
+ */
+export const flattenImageBackground = async (
+  image: ImageMessage,
+  background: string
+): Promise<ImageMessage> => {
+  const bytes = readImageBytes(image)
+  if (!bytes) return image
+
+  try {
+    const flattened = await sharp(bytes)
+      .flatten({ background })
+      .png()
+      .toBuffer()
+    return replaceImageBytes(image, flattened)
+  } catch (error: unknown) {
+    logWarn(`[Render] 固定图片背景失败，保留原图: ${error instanceof Error ? error.message : String(error)}`)
+    return image
+  }
+}
+
 const getImagePayload = (image: ImageMessage): unknown => {
   if (!isRecord(image)) return image
   return image.file ??

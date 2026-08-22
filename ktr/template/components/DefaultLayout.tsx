@@ -40,10 +40,9 @@ export const DefaultLayout: React.FC<DefaultLayoutProps> = ({ children, ctx, cla
         // relative 同样从旧引擎外壳（transform 语义）迁来：根元素是绝对定位包含块，
         // 模板里 inset-0 的氛围层锚定在卡片矩形上并被圆角裁剪，而不是锚到视口逃逸出去。
         //
-        // 圆角外那圈是透明像素，能不能留住取决于成图编码：宿主只要看到 multiPage 为真就把编码
-        // 强制改成 jpeg（renderers/puppeteer/lib/puppeteer.js:212-215），jpeg 没有 alpha，
-        // 那圈会被合成成纯白（实测 rgba(255,255,255,255)）。所以本仓库不再走宿主的分片，
-        // 一律单张元素截图拿 png，超高再自己用 sharp 切（src/module/utils/imageSlicer.ts）。
+        // 截图阶段需要先保留透明圆角和半透明层，最终发送前由 Render 按当前主题固定底色。
+        // 宿主只要看到 multiPage 为真就会强制改成 jpeg（renderers/puppeteer/lib/puppeteer.js:212-215），
+        // 因此本仓库不再走宿主的分片，一律单张元素截图拿 png，固定背景后超高再自己用 sharp 切。
         'relative w-360 shrink-0 overflow-hidden rounded-[5rem] bg-background bg-clip-padding text-foreground font-[HarmonyOSHans-Regular]',
         className
       )}

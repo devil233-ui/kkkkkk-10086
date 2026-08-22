@@ -14,6 +14,7 @@ import Version from './Version.js'
 import {
   applyWatermarkToImages,
   buildWatermarkText,
+  flattenImageBackground,
   type ImageMessage
 } from './Watermark.js'
 
@@ -34,6 +35,10 @@ const getMultiPageHeight = (): number => {
   return Number.isFinite(height) && height > 0 ? height : 12000
 }
 
+/** 与 HeroUI 的 surface 主题保持一致，并让最终图片不再依赖查看器背景。 */
+const getRenderSurfaceColor = (useDarkTheme: boolean): string =>
+  useDarkTheme ? '#2b2b30' : '#ffffff'
+
 /**
  * 截一张成图，超高时自己切片。
  *
@@ -43,19 +48,21 @@ const getMultiPageHeight = (): number => {
  * rgba(255,255,255,255)，也就是成图四角的白三角。而它的分片路径还会从截元素改成截视口，
  * 把卡片没盖住的区域一起拍进去。
  *
- * 所以分片改成自己做：拿单张 png，再按 `multiPageHeight` 用 sharp 纵向切，
- * alpha 全程留得住，圆角在首片和末片上照常成立。
+ * 所以分片改成自己做：拿单张 png，再按 `multiPageHeight` 用 sharp 纵向切；截图在
+ * 分片前已合成到固定主题底色，最终发送的 PNG 不再依赖查看器背景。
  * `multiPageRender: false` 的语义不变 —— 那是「不要分片」，此时整张发出去。
  */
 const captureImages = async (
   name: string,
   htmlPath: string,
-  data: Record<string, unknown>
+  data: Record<string, unknown>,
+  surfaceColor: string
 ): Promise<ImageMessage[] | false> => {
   const image = await puppeteer.screenshotFile(name, htmlPath, data)
   if (!image) return false
-  if (Config.app.multiPageRender === false) return [image]
-  return await sliceTallImage(image, getMultiPageHeight())
+  const flattened = await flattenImageBackground(image, surfaceColor)
+  if (Config.app.multiPageRender === false) return [flattened]
+  return await sliceTallImage(flattened, getMultiPageHeight())
 }
 
 /**
@@ -71,6 +78,7 @@ export const Render = async <R extends ReactTemplateRoute> (
   params: TemplateParams<R> = {} as TemplateParams<R>
 ): Promise<ImageMessage[] | false> => {
   const useDarkTheme = Common.useDarkTheme()
+  const surfaceColor = getRenderSurfaceColor(useDarkTheme)
   const reactRoute = resolveReactTemplateRoute(templatePath)
   if (!reactRoute) {
     throw new Error(`[Render] 未注册 React 模板路由：${templatePath}`)
@@ -138,7 +146,8 @@ export const Render = async <R extends ReactTemplateRoute> (
     images = await captureImages(
       `${Version.pluginName}/react/${reactRoute}`,
       rendered.htmlPath,
-      screenshotData
+      screenshotData,
+      surfaceColor
     )
   } finally {
     await rendered.cleanup()

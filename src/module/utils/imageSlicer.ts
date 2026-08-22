@@ -7,8 +7,8 @@ import { readImageBytes, replaceImageBytes, type ImageMessage } from './Watermar
  *
  * 为什么不用宿主自带的分片：TRSS-Yunzai 只要看到 `multiPage` 为真，就把编码强制改成
  * jpeg（renderers/puppeteer/lib/puppeteer.js:212-215，我们传的 imgType: 'png' 被覆盖），
- * 而 jpeg 没有 alpha —— 卡片圆角外那圈透明像素会被合成成纯白，也就是成图四角的白三角。
- * 想同时要「圆角」和「分片」，就只能自己拿单张 png 来切。
+ * 而 jpeg 会改变透明圆角和半透明层的合成结果。想同时要「圆角」「固定底色」和「分片」，
+ * 就只能自己拿单张 png 来合成并切片。
  *
  * 宿主分片的另一处代价：num > 1 时它改用 `page.screenshot()` 截视口而不是截元素，
  * 视口宽度取的是 `#container` 的盒宽，页面上任何没被卡片盖住的区域都会一起进图。
@@ -19,7 +19,7 @@ import { readImageBytes, replaceImageBytes, type ImageMessage } from './Watermar
 const OVERLAP = 0
 
 /**
- * 把一张过高的图按最大高度纵向切片。
+ * 把一张已固定背景的过高图片按最大高度纵向切片。
  *
  * @param image 单张成图消息段
  * @param maxHeight 每片的最大高度；小于等于 0 视为不限制
@@ -46,7 +46,7 @@ export const sliceTallImage = async (image: ImageMessage, maxHeight: number): Pr
       const remaining = height - top
       if (remaining <= 0) break
       const extractHeight = Math.min(sliceHeight + (index === count - 1 ? 0 : OVERLAP), remaining)
-      // 每片都重新走一次 sharp：png 编码器保留 alpha，圆角在首片和末片上照常成立
+      // 每片都重新走一次 sharp：继续使用 PNG，避免宿主 JPEG 改变圆角和半透明层的颜色
       const buffer = await sharp(bytes)
         .extract({ left: 0, top, width, height: extractHeight })
         .png()
