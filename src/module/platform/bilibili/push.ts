@@ -1554,7 +1554,7 @@ export class Bilibilipush extends Base {
     for (const subscription of subscriptions) {
       const host_mid = subscription.host_mid
       const userInfo = asAmagiResponse<BiliUserProfile>(await this.amagi.getBilibiliData('用户主页数据', { host_mid, typeMode: 'strict' }))
-      const configItem = Config.pushlist.bilibili?.find(item => item.host_mid === host_mid)
+      const configItem = Config.pushlist.bilibili?.find(item => String(item.host_mid) === String(host_mid))
 
       renderOpt.push({
         avatar_img: userInfo.data.data.card.face,

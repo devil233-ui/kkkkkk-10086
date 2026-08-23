@@ -23,6 +23,8 @@ const pushTypeConfig: Record<BilibiliPushType, { label: string; color: string; i
  */
 const BilibiliUserItem: React.FC<BilibiliUserListData['renderOpt'][number]> = (props) => {
   const activePushTypes = new Set<BilibiliPushType>(props.pushTypes ?? (Object.keys(pushTypeConfig) as BilibiliPushType[]))
+  const activePushTypeEntries = (Object.entries(pushTypeConfig) as [BilibiliPushType, (typeof pushTypeConfig)[BilibiliPushType]][])
+    .filter(([type]) => activePushTypes.has(type))
 
   return (
     <li className="relative group overflow-hidden rounded-4xl bg-surface/60 border border-border/50 backdrop-blur-xl shadow-xl">
@@ -95,21 +97,15 @@ const BilibiliUserItem: React.FC<BilibiliUserListData['renderOpt'][number]> = (p
 
         <div className="grid grid-cols-[minmax(0,1.15fr)_minmax(0,0.95fr)] gap-3 items-stretch min-h-39">
           <div className="grid grid-cols-3 gap-2 auto-rows-fr h-full">
-            {(Object.entries(pushTypeConfig) as [BilibiliPushType, (typeof pushTypeConfig)[BilibiliPushType]][]).map(([type, config]) => {
-              const isActive = activePushTypes.has(type)
-
-              return (
-                <div
-                  key={type}
-                  className={`h-full min-h-18.5 px-2.5 py-2.5 rounded-xl border backdrop-blur-sm flex flex-col justify-between transition-colors duration-200 ${
-                    isActive ? config.color : 'bg-surface/45 text-muted border-border/15'
-                  }`}
-                >
-                  <config.icon size={18} className={isActive ? '' : 'opacity-40'} />
-                  <span className="text-[13px] font-bold tracking-wide leading-tight">{config.label}</span>
-                </div>
-              )
-            })}
+            {activePushTypeEntries.map(([type, config]) => (
+              <div
+                key={type}
+                className={`h-full min-h-18.5 px-2.5 py-2.5 rounded-xl border backdrop-blur-sm flex flex-col justify-between ${config.color}`}
+              >
+                <config.icon size={18} />
+                <span className="text-[13px] font-bold tracking-wide leading-tight">{config.label}</span>
+              </div>
+            ))}
           </div>
 
           <div className="grid grid-rows-3 gap-2 h-full">

@@ -22,7 +22,7 @@ export interface PushListGroupEvent {
  * 此时返回空串——模板那格是个圆角容器，空图只是不显示，不会炸。
  */
 const groupAvatarUrl = (groupId: string): string =>
-  /^\d{5,}$/.test(groupId) ? `https://p.qlogo.cn/gh/${groupId}/${groupId}/640` : ''
+  /^\d{5,}$/.test(groupId) ? `https://p.qlogo.cn/gh/${groupId}/${groupId}/0` : ''
 
 /** 组装 `userlist` 契约里的 groupInfo */
 export const buildPushListGroupInfo = (event: PushListGroupEvent) => {

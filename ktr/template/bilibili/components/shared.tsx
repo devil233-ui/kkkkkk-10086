@@ -92,7 +92,7 @@ interface EnhancedImageProps {
  * 主要功能:
  * 1. 图片加载失败时显示占位符
  * 2. 支持圆形和方形两种样式
- * 3. 自动处理防盗链(添加referrerPolicy和crossOrigin属性)
+ * 3. 自动处理防盗链（添加 referrerPolicy；不强制 CORS，兼容不返回 CORS 头的头像接口）
  */
 export const EnhancedImage: React.FC<EnhancedImageProps> = ({ src, alt, className = '', placeholder, isCircular = false }) => {
   const [hasError, setHasError] = useState(false)
@@ -112,7 +112,7 @@ export const EnhancedImage: React.FC<EnhancedImageProps> = ({ src, alt, classNam
     )
   }
 
-  return <img src={src} alt={alt} className={className} onError={handleError} referrerPolicy="no-referrer" crossOrigin="anonymous" />
+  return <img src={src} alt={alt} className={className} onError={handleError} referrerPolicy="no-referrer" />
 }
 
 /**
