@@ -66,6 +66,10 @@ const STRIP_TYPES_MESSAGE = '该文件由 `node --experimental-strip-types` 运�
  */
 const STRIP_TYPES_ENTRYPOINTS = [
   'src/module/tooling/audit-runtime-deps.ts',
+  'src/module/tooling/build-all.ts',
+  'src/module/tooling/build-core.ts',
+  'src/module/tooling/build-safety.ts',
+  'src/module/tooling/build-watch.ts',
   'src/module/tooling/template-build.ts',
   'src/module/tooling/react-template/registry-cli.ts',
   'src/module/tooling/react-template/build-cleaner-cli.ts',

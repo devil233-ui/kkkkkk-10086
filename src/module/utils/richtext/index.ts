@@ -10,7 +10,7 @@
  * pnpm workspace 包 `@kkk/richtext` 绕开这个限制，本仓库是宿主 Yunzai 工作区里的
  * 单包插件，不能自己再开一个 workspace root，所以改成：核心留在 rootDir 内，
  * `@kkk/richtext` 这个说明符按 tsconfig 分别解析——
- * `tsconfig.json` 指向本文件，`tsconfig.template.json` 与 vite 指向 ktr 的 barrel。
+ * `tsconfig.build.json` 指向本文件，根 `tsconfig.json`、模板配置与 vite 指向 ktr 的 barrel。
  * 两边的 import 写法因此和上游完全一致。
  */
 export * from './parse/index.js'

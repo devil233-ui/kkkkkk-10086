@@ -5,18 +5,18 @@
     "moduleResolution": "Bundler",
     "jsx": "react-jsx",
     "rewriteRelativeImportExtensions": true,
-    "rootDir": "./src",
     "paths": {
       "@/*": [
         "./src/*"
       ],
       "@kkk/richtext": [
-        "./src/module/utils/richtext/index.ts"
+        "./ktr/richtext/index.ts"
       ]
     },
     "outDir": "./lib",
     "allowJs": false,
     "checkJs": false,
+    "noEmit": true,
     "strict": true,
     "noImplicitOverride": false,
     "noEmitOnError": true,

@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": "./src",
+    "outDir": "./lib",
+    "paths": {
+      "@/*": ["./src/*"],
+      "@kkk/richtext": ["./src/module/utils/richtext/index.ts"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["lib", "node_modules", "tests"]
+}

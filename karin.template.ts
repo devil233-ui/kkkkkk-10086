@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { defineConfig } from '@karinjs/template-react'
 
 const root = fileURLToPath(new URL('.', import.meta.url))
+const templateOutDir = process.env.KKK_TEMPLATE_OUT_DIR || 'lib/react-template'
 
 export default defineConfig({
   dir: {
@@ -12,7 +13,7 @@ export default defineConfig({
     copyAssets: false
   },
   standalone: {
-    outDir: 'lib/react-template',
+    outDir: templateOutDir,
     target: 'node22',
     format: 'esm',
     minify: false,

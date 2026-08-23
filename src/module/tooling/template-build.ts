@@ -1,45 +1,110 @@
-import { execSync } from 'node:child_process'
-import { readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const PluginPath = fileURLToPath(new URL('../../../', import.meta.url))
-const tsconfigPath = join(PluginPath, 'tsconfig.json')
+import { replaceDirectoryAtomically, withBuildLock } from './build-safety.ts'
+import { assertUnlinkedOwnedPath } from './react-template/path-safety.ts'
+
+const pluginRoot = fileURLToPath(new URL('../../../', import.meta.url))
+const finalOutput = join(pluginRoot, 'lib', 'react-template')
+const stampName = '.source-hash'
+const fingerprintFiles = [
+  'karin.template.ts',
+  'pnpm-lock.yaml'
+]
+const fingerprintDirectories = [
+  'ktr',
+  'src/module/utils/richtext',
+  'src/template-sdk'
+]
 
 /**
- * ktr standalone typechecks its generated entry with the root tsconfig.
- * Keep the application tsconfig strict while removing options that describe
- * only the src/ emit boundary during that short-lived template build.
- *
- * `@kkk/richtext` 也必须在这段窗口里重指向 ktr 的 barrel：根 tsconfig 平时指向
- * `src/module/utils/richtext`（react-free 核心），因为 rootDir 是 ./src，从 src/ 引用
- * ktr/ 下的 .ts 会 TS6059。但 ktr 的模板树需要 barrel 额外补上的 React 渲染器
- * （renderRichTextToReact），而这一步刚好把 rootDir 删掉了，指向 ktr/ 不再受限。
- * karin.template.ts 里的 vite alias 只负责打包解析，管不到 ktr 自己这遍类型检查。
+ * 需要触发模板重建的输入。业务 src 改动不会进入这里，因此普通修复只需 build:core。
  */
-const buildTemplates = (): void => {
-  const original = readFileSync(tsconfigPath, 'utf8')
-  const config = JSON.parse(original) as {
-    compilerOptions?: Record<string, unknown>
-  }
-  const compilerOptions = config.compilerOptions ?? {}
-  delete compilerOptions.rootDir
-  delete compilerOptions.noUncheckedIndexedAccess
-  compilerOptions.paths = {
-    ...(compilerOptions.paths as Record<string, string[]> | undefined),
-    '@kkk/richtext': ['./ktr/richtext/index.ts']
-  }
-  config.compilerOptions = compilerOptions
-
-  writeFileSync(tsconfigPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8')
-  try {
-    execSync('pnpm exec ktr build', {
-      cwd: PluginPath,
-      stdio: 'inherit'
-    })
-  } finally {
-    writeFileSync(tsconfigPath, original, 'utf8')
+const collectFiles = (directory: string, result: string[]): void => {
+  for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name, 'en'))) {
+    const absolute = join(directory, entry.name)
+    if (entry.isDirectory()) collectFiles(absolute, result)
+    else if (entry.isFile()) result.push(absolute)
   }
 }
 
-buildTemplates()
+const createTemplateFingerprint = (): string => {
+  const files: string[] = []
+  for (const file of fingerprintFiles) {
+    const absolute = join(pluginRoot, file)
+    if (existsSync(absolute)) files.push(absolute)
+  }
+  for (const directory of fingerprintDirectories) {
+    const absolute = join(pluginRoot, directory)
+    if (existsSync(absolute)) collectFiles(absolute, files)
+  }
+
+  const hash = createHash('sha256')
+  for (const file of files.sort((a, b) => a.localeCompare(b, 'en'))) {
+    hash.update(relative(pluginRoot, file).split('\\').join('/'))
+    hash.update('\0')
+    hash.update(readFileSync(file))
+    hash.update('\0')
+  }
+  return hash.digest('hex')
+}
+
+const readCurrentFingerprint = (): string => {
+  try {
+    return readFileSync(join(finalOutput, stampName), 'utf8').trim()
+  } catch {
+    return ''
+  }
+}
+
+const buildTemplatesUnlocked = (force: boolean): void => {
+  const fingerprint = createTemplateFingerprint()
+  if (!force && existsSync(join(finalOutput, 'index.mjs')) && readCurrentFingerprint() === fingerprint) {
+    console.log('[build:template] 模板输入未变化，复用现有运行包')
+    return
+  }
+
+  const cacheRoot = join(pluginRoot, '.ktr')
+  const tempOutput = join(cacheRoot, `react-template-build-${process.pid}-${Date.now()}`)
+  assertUnlinkedOwnedPath(pluginRoot, tempOutput)
+  assertUnlinkedOwnedPath(pluginRoot, finalOutput)
+  mkdirSync(cacheRoot, { recursive: true })
+  rmSync(tempOutput, { recursive: true, force: true })
+
+  try {
+    const pnpmExecutable = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
+    execFileSync(pnpmExecutable, ['exec', 'ktr', 'build'], {
+      cwd: pluginRoot,
+      env: { ...process.env, KKK_TEMPLATE_OUT_DIR: tempOutput },
+      stdio: 'inherit'
+    })
+    if (!existsSync(join(tempOutput, 'index.mjs'))) {
+      throw new Error(`模板构建未生成入口：${join(tempOutput, 'index.mjs')}`)
+    }
+    writeFileSync(join(tempOutput, stampName), `${fingerprint}\n`, 'utf8')
+    replaceDirectoryAtomically(pluginRoot, tempOutput, finalOutput)
+    console.log('[build:template] 模板运行包已原子更新')
+  } finally {
+    if (existsSync(tempOutput)) rmSync(tempOutput, { recursive: true, force: true })
+  }
+}
+
+export const buildTemplates = ({
+  lock = true,
+  force = false
+}: {
+  lock?: boolean
+  force?: boolean
+} = {}): void => {
+  const action = (): void => buildTemplatesUnlocked(force)
+  if (lock) withBuildLock(pluginRoot, 'template build', action)
+  else action()
+}
+
+const entryPath = process.argv[1] ? resolve(process.argv[1]) : ''
+if (entryPath && entryPath === fileURLToPath(import.meta.url)) {
+  buildTemplates({ force: process.argv.includes('--force') })
+}
