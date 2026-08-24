@@ -7,6 +7,7 @@ import {
   type DouyinEmojiInfo
 } from './danmaku.js'
 import { buildLivePhotoMessages, buildLivePhotoTipMessage } from '@/module/platform/common/livePhoto'
+import { resolveCommentLimit } from '@/module/platform/common/commentLimit'
 import { douyinComments } from './index.js'
 import { renderWorkImage } from './render.js'
 import { buildDouyinLivePayload, type DouyinLiveItem, type DouyinRoomData } from './live.js'
@@ -308,11 +309,7 @@ export class DouYin extends Base {
           const isArticle = isDouyinArticle(VideoData.data.aweme_detail)
           const isVideo = isDouyinVideo(VideoData.data.aweme_detail)
           if (typeof this.is_mp4 !== 'boolean') this.is_mp4 = isVideo
-          const CommentsData = narrowApiResponse<CommentsPayload>(await this.amagi.getDouyinData('评论数据', {
-            aweme_id: data.aweme_id,
-            number: Config.douyin.numcomments,
-            typeMode: 'strict'
-          }), '评论数据')
+          const commentLimit = resolveCommentLimit(Config.douyin.numcomments, undefined)
           let emojiListPromise: Promise<DouyinEmojiInfo[]> | undefined
           const getEmojiList = (): Promise<DouyinEmojiInfo[]> => {
             emojiListPromise ??= (async () => {
@@ -767,8 +764,13 @@ export class DouYin extends Base {
            * 原来它排在 `await runMediaTasks(...)` 之后，视频上传多久评论图就得等多久，
            * 而这三件事之间没有数据依赖。顺序不再保证，谁先好谁先发。
            */
-          const sendComment = hasDouyinContent('评论图', 'comment')
+          const sendComment = hasDouyinContent('评论图', 'comment') && commentLimit > 0
             ? async (): Promise<void> => {
+              const CommentsData = narrowApiResponse<CommentsPayload>(await this.amagi.getDouyinData('评论数据', {
+                aweme_id: data.aweme_id,
+                number: commentLimit,
+                typeMode: 'strict'
+              }), '评论数据')
               const list = await getEmojiList()
               const commentsResult = await douyinComments(CommentsData, list)
               if (!commentsResult.CommentsData.length) {
