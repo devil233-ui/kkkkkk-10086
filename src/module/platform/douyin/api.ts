@@ -3,6 +3,11 @@ import type { DouyinMethodToFetcher as DouyinMethodToFetcherType } from '@ikenxu
 import Config from '@/module/utils/Config'
 import { buildUserAgentHeader } from '@/module/platform/common/userAgent'
 import { DEFAULT_REQUEST_TIMEOUT_MS, runWithRequestGuard } from '@/module/utils/RequestGuard'
+import {
+  attachDouyinApiDiagnostic,
+  formatDouyinApiDiagnostic,
+  type DouyinApiDiagnostic
+} from './apiDiagnostics.js'
 
 /** 旧版 amagi v5 使用的中文方法名 */
 export type DouyinMethodName = keyof typeof DouyinMethodToFetcherType
@@ -31,11 +36,17 @@ export interface DouyinRequestConfig {
 export interface DouyinApiDependencies {
   methodMap: Record<string, string | undefined>
   fetcher: Record<string, DouyinFetcherMethod | undefined>
+  events?: AmagiEvents
+}
+
+interface AmagiEvents {
+  on: (event: 'api:error', listener: (data: unknown) => void) => unknown
 }
 
 interface AmagiDouyinModule {
   DouyinMethodToFetcher: Record<string, string | undefined>
   douyinFetcher: Record<string, DouyinFetcherMethod | undefined>
+  amagiEvents?: AmagiEvents
 }
 
 const require = createRequire(import.meta.url)
@@ -47,11 +58,65 @@ const getDefaultDependencies = (): DouyinApiDependencies => {
     const amagi = require('@ikenxuan/amagi') as AmagiDouyinModule
     defaultDependencies = {
       methodMap: amagi.DouyinMethodToFetcher,
-      fetcher: amagi.douyinFetcher
+      fetcher: amagi.douyinFetcher,
+      events: amagi.amagiEvents
     }
   }
   return defaultDependencies
 }
+
+const recentApiErrors: Array<{ receivedAt: number, diagnostic: DouyinApiDiagnostic }> = []
+let subscribedEvents: AmagiEvents | undefined
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null
+
+const toDiagnostic = (value: unknown): DouyinApiDiagnostic | undefined => {
+  if (!isRecord(value) || value.platform !== 'douyin' || typeof value.methodType !== 'string') return undefined
+  if (typeof value.errorMessage !== 'string') return undefined
+
+  return {
+    methodType: value.methodType,
+    errorCode: typeof value.errorCode === 'string' || typeof value.errorCode === 'number' ? value.errorCode : undefined,
+    errorMessage: value.errorMessage,
+    duration: typeof value.duration === 'number' ? value.duration : undefined
+  }
+}
+
+const ensureApiErrorListener = (events?: AmagiEvents): void => {
+  if (!events || events === subscribedEvents) return
+
+  events.on('api:error', value => {
+    const diagnostic = toDiagnostic(value)
+    if (!diagnostic) return
+    recentApiErrors.push({ receivedAt: Date.now(), diagnostic })
+    if (recentApiErrors.length > 32) recentApiErrors.splice(0, recentApiErrors.length - 32)
+  })
+  subscribedEvents = events
+}
+
+const normalizeMethod = (value: string): string => value.replace(/^fetch/i, '').toLowerCase()
+
+const findRecentApiError = (
+  startedAt: number,
+  completedAt: number,
+  fetcherMethod: string
+): DouyinApiDiagnostic | undefined => {
+  const expectedMethod = normalizeMethod(fetcherMethod)
+  for (let index = recentApiErrors.length - 1; index >= 0; index--) {
+    const item = recentApiErrors[index]
+    if (!item || item.receivedAt < startedAt - 50 || item.receivedAt > completedAt + 50) continue
+    if (normalizeMethod(item.diagnostic.methodType) === expectedMethod) return item.diagnostic
+  }
+  return undefined
+}
+
+interface RuntimeLogger {
+  warn?: (message: string) => unknown
+}
+
+const getLogger = (): RuntimeLogger | undefined =>
+  (globalThis as unknown as { logger?: RuntimeLogger }).logger
 
 const buildRequestConfig = (): DouyinRequestConfig => ({
   timeout: Config.request?.timeout || 15000,
@@ -100,6 +165,7 @@ export const getDouyinData = async (
   arg2?: Record<string, unknown>,
   dependencies: DouyinApiDependencies = getDefaultDependencies()
 ): Promise<unknown> => {
+  ensureApiErrorListener(dependencies.events)
   const fetcherMethod = dependencies.methodMap[method] ??
     (typeof dependencies.fetcher[method] === 'function' ? method : undefined)
   const fetcher = fetcherMethod ? dependencies.fetcher[fetcherMethod] : undefined
@@ -108,14 +174,34 @@ export const getDouyinData = async (
   }
 
   const { cookie, options } = normalizeArgs(arg1, arg2)
-  return await runWithRequestGuard(
-    async signal => await fetcher(options, cookie, {
-      ...buildRequestConfig(),
-      signal
-    }),
-    {
-      timeoutMs: Math.min(Config.request?.amagiTimeout ?? DEFAULT_REQUEST_TIMEOUT_MS, DEFAULT_REQUEST_TIMEOUT_MS),
-      maxRetries: Config.request?.amagiMaxRetries
+  const startedAt = Date.now()
+  const requestFetcher = fetcher
+  try {
+    const result = await runWithRequestGuard(
+      async signal => {
+        const requestConfig: DouyinRequestConfig = {
+          ...buildRequestConfig(),
+          signal
+        }
+        return await requestFetcher(options, cookie, requestConfig)
+      },
+      {
+        timeoutMs: Math.min(Config.request?.amagiTimeout ?? DEFAULT_REQUEST_TIMEOUT_MS, DEFAULT_REQUEST_TIMEOUT_MS),
+        maxRetries: Config.request?.amagiMaxRetries
+      }
+    )
+    const completedAt = Date.now()
+    const diagnostic = findRecentApiError(startedAt, completedAt, fetcherMethod)
+    const resultCode = isRecord(result) ? result.code : undefined
+    if (resultCode !== 200) {
+      getLogger()?.warn?.(formatDouyinApiDiagnostic(method, options, resultCode, diagnostic))
+      return diagnostic ? attachDouyinApiDiagnostic(result, diagnostic) : result
     }
-  )
+    return result
+  } catch (error) {
+    const completedAt = Date.now()
+    const diagnostic = findRecentApiError(startedAt, completedAt, fetcherMethod)
+    getLogger()?.warn?.(formatDouyinApiDiagnostic(method, options, undefined, diagnostic))
+    throw error
+  }
 }

@@ -172,6 +172,11 @@ const asText = (value: unknown): string =>
 /** 按顺序取第一个非空的文本字段 */
 const pick = (...values: unknown[]): string => values.map(asText).find(Boolean) || ''
 
+const getApiErrorMessage = (err: ApiErrorRecord): string => {
+  const error = isRecord(err.error) ? err.error : isRecord(err.data) ? err.data : {}
+  return pick(error.message, error.errorDescription, error.amagiMessage, err.message) || 'API 请求失败'
+}
+
 /** 把 amagi 的结构化报错字段整理成键值对，供模板独立展示 */
 const collectApiDiagnostics = (
   platform: string,
@@ -183,8 +188,10 @@ const collectApiDiagnostics = (
     { label: '平台', value: platform },
     { label: '接口', value: method },
     { label: '业务码', value: pick(err.code, error.code, error.errorCode) },
+    { label: '上游业务码', value: pick(error.amagiStatusCode) },
     { label: '请求类型', value: pick(error.requestType, error.request_type) },
     { label: '错误描述', value: pick(error.errorDescription, error.amagiMessage) },
+    { label: '上游耗时', value: pick(error.amagiDuration ? `${error.amagiDuration}ms` : '') },
     { label: '接口地址', value: pick(error.requestUrl, error.request_url) }
   ].filter(item => item.value !== '')
 }
@@ -411,7 +418,7 @@ export class Base {
               const img = await buildApiErrorImage('douyin', String(property), result, event)
               if (Object.keys(event ?? {}).length === 0) {
                 await sendMasterMessage('douyin', img)
-                throw new Error(result.message)
+                throw new Error(getApiErrorMessage(result))
               }
               await event?.reply?.(img)
               throw new Error(result.message)
