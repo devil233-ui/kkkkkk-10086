@@ -48,12 +48,15 @@ export const isDouyinImage = (aweme: DouyinAweme | undefined): boolean =>
 
 export const getDouyinWorkCoverUrl = (aweme: DouyinAweme | undefined): string => {
   if (isDouyinVideo(aweme)) {
-    return aweme?.video?.animated_cover?.url_list?.[0] ||
-      aweme?.video?.dynamic_cover?.url_list?.[0] ||
-      aweme?.video?.cover_original_scale?.url_list?.[0] ||
-      aweme?.video?.cover?.url_list?.[0] ||
-      aweme?.video?.origin_cover?.url_list?.[0] ||
-      ''
+    const lowResolution = /~tplv-[^/?]*(?:270p|360p|480p|540p)/i
+    const candidates = [
+      aweme?.video?.animated_cover,
+      aweme?.video?.dynamic_cover,
+      aweme?.video?.cover_original_scale,
+      aweme?.video?.cover,
+      aweme?.video?.origin_cover
+    ].flatMap(field => field?.url_list ?? [])
+    return candidates.find(url => !lowResolution.test(url)) || candidates[0] || ''
   }
 
   if (isDouyinImage(aweme)) {

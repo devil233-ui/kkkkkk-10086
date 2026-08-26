@@ -46,9 +46,11 @@ export const toErrorCardPlatform = (platform: string | undefined) => {
  * 空串走的正是「不渲染时间胶囊」这条分支 —— 和现在线上的表现一模一样，
  * 只是把「字段缺失」换成了「字段为空」，契约就能过。
  */
-export const buildContextLogEntries = (groupId: string | number, userId: string | number) => [
+export const buildContextLogEntries = (groupId: string | number, userId?: string | number) => [
   { timestamp: '', level: 'INFO' as const, message: `群: ${groupId}`, raw: `群: ${groupId}` },
-  { timestamp: '', level: 'INFO' as const, message: `用户: ${userId}`, raw: `用户: ${userId}` }
+  ...(userId === undefined
+    ? []
+    : [{ timestamp: '', level: 'INFO' as const, message: `用户: ${userId}`, raw: `用户: ${userId}` }])
 ]
 
 export const buildErrorMessage = (ctx: ErrorHandlerContext): string => {

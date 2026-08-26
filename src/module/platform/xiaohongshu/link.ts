@@ -7,6 +7,9 @@ export const isXiaohongshuLink = (value: string): boolean => XIAOHONGSHU_LINK_PA
 /** 构造可安全放入二维码的笔记分享链接。 */
 export const buildXiaohongshuShareUrl = (noteId: string, xsecToken?: string): string => {
   const url = new URL(`https://www.xiaohongshu.com/discovery/item/${encodeURIComponent(noteId)}`)
+  url.searchParams.set('source', 'webshare')
+  url.searchParams.set('xhsshare', 'pc_web')
   if (xsecToken) url.searchParams.set('xsec_token', xsecToken)
+  url.searchParams.set('xsec_source', 'pc_share')
   return url.toString()
 }

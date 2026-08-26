@@ -529,6 +529,11 @@ export class Bilibilipush extends Base {
           shareUrl: string
         } | null = null
 
+        // 定时任务没有事件对象，接口错误卡片需要从当前动态的目标取得群和机器人。
+        this.pushContext = {
+          groupWithBot: dynamicItem.targets.map(target => `${target.groupId}:${target.botId}`)
+        }
+
         if (!skip) {
           const userINFO = asAmagiResponse<BiliUserProfile>(await this.amagi.getBilibiliData('用户主页数据', { host_mid: dynamicItem.host_mid, typeMode: 'strict' }))
           const emojiResponse = asAmagiResponse<{ data?: { packages?: unknown } }>(await this.amagi.getBilibiliData('Emoji数据'))
@@ -1127,6 +1132,8 @@ export class Bilibilipush extends Base {
     } catch (e) {
       logger.error('推送动态列表失败', e)
       return false
+    } finally {
+      this.pushContext = undefined
     }
     return true
   }
@@ -1146,6 +1153,7 @@ export class Bilibilipush extends Base {
     ))
 
     for (const item of liveSubscriptions) {
+      this.pushContext = { groupWithBot: item.group_id }
       let liveStatus: BilibiliUserLiveStatus['data']
       try {
         const response = asAmagiResponse<BilibiliUserLiveStatus>(await this.amagi.getBilibiliData('用户直播状态', {
@@ -1156,11 +1164,13 @@ export class Bilibilipush extends Base {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         logger.warn(`[Bilibili 推送] UP主 ${item.remark || item.host_mid}（${item.host_mid}）直播状态直查失败，本轮回退到直播动态检测：${message}`)
+        this.pushContext = undefined
         continue
       }
 
       if (liveStatus.roomStatus !== 1 || liveStatus.liveStatus !== 1 || liveStatus.roomid <= 0) {
         handledUids.add(item.host_mid)
+        this.pushContext = undefined
         continue
       }
 
@@ -1174,6 +1184,7 @@ export class Bilibilipush extends Base {
         /** 两个直播接口状态不一致时，以直播间详情为准。 */
         if (liveInfo.live_status !== 1) {
           handledUids.add(item.host_mid)
+          this.pushContext = undefined
           continue
         }
 
@@ -1201,6 +1212,7 @@ export class Bilibilipush extends Base {
         const message = error instanceof Error ? error.message : String(error)
         logger.warn(`[Bilibili 推送] UP主 ${item.remark || item.host_mid}（${item.host_mid}）直播场次信息不完整，本轮回退到直播动态检测：${message}`)
       }
+      this.pushContext = undefined
     }
 
     return { handledUids, willBePushList }
@@ -1245,6 +1257,7 @@ export class Bilibilipush extends Base {
           }
           if (allowedDynamicTypes.size === 0) continue
           logger.debug(`[Bilibili 推送] 开始获取UP: ${item.remark}（${item.host_mid}） 的动态列表，推送类型：${pushTypes.join(', ')}`)
+          this.pushContext = { groupWithBot: item.group_id }
           const dynamic_list = asAmagiResponse<BiliUserDynamic>(await this.amagi.getBilibiliData('用户主页动态列表数据', { host_mid: item.host_mid, typeMode: 'strict' }))
           if (dynamic_list.data.data.items.length > 0) {
             // 遍历接口返回的视频列表
@@ -1324,6 +1337,8 @@ export class Bilibilipush extends Base {
             `[Bilibili 推送] UP主 ${item.remark}（${item.host_mid}）本轮跳过：${error instanceof Error ? error.message : String(error)}`
           )
           continue
+        } finally {
+          this.pushContext = undefined
         }
       }
     } catch (error) {

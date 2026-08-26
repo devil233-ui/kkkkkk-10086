@@ -157,7 +157,7 @@ const getQualityLevel = (stream: XiaohongshuLiveVideo): string => {
   return '540p'
 }
 
-const selectVideoStream = (streamData: XiaohongshuStreamData | undefined): XiaohongshuLiveVideo | null | undefined => {
+export const selectVideoStream = (streamData: XiaohongshuStreamData | undefined): XiaohongshuLiveVideo | null | undefined => {
   const streams = collectVideoStreams(streamData)
   if (!streams.length) return null
 
@@ -167,7 +167,11 @@ const selectVideoStream = (streamData: XiaohongshuStreamData | undefined): Xiaoh
 
   if (quality === 'adapt') {
     const limit = (Config.xiaohongshu.maxAutoVideoSize || 50) * 1024 * 1024
-    return sorted.find(stream => (stream.size || 0) <= limit) || sorted.at(-1)
+    for (const level of qualityPriority) {
+      const stream = sorted.find(stream => getQualityLevel(stream) === level && (stream.size || 0) <= limit)
+      if (stream) return stream
+    }
+    return sorted.at(-1)
   }
 
   const targetIndex = qualityPriority.indexOf(quality)
@@ -196,6 +200,10 @@ export class Xiaohongshu extends Base {
     if (!Config.cookies.xiaohongshu) {
       await this.e!.reply!('我还没有小红书 Cookies，暂时无法解析')
       return true
+    }
+
+    if (Config.app.parseTip) {
+      await this.e!.reply!('检测到小红书链接，开始解析')
     }
 
     const sendContent = normalizeSendContent()
@@ -279,10 +287,11 @@ export class Xiaohongshu extends Base {
       if (!comments.length) {
         await this.e!.reply!('这个笔记没有评论 ~')
       } else {
+        const renderComments = buildRenderComments(comments, emojiData, card.note_id || data.note_id)
         const commentListImg = await Render('xiaohongshu/comment', {
           Type: card.video ? '视频' : '图文',
-          CommentsData: buildRenderComments(comments, emojiData, card.note_id || data.note_id),
-          CommentLength: comments.length,
+          CommentsData: renderComments,
+          CommentLength: renderComments.length,
           ImageLength: card.image_list?.length || 0,
           share_url: buildShareUrl(data)
         })

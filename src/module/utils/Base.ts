@@ -196,17 +196,42 @@ const collectApiDiagnostics = (
   ].filter(item => item.value !== '')
 }
 
+const parsePushTargets = (groupWithBot: string[]): Array<{ groupId: string, botId: string }> =>
+  groupWithBot
+    .map(entry => {
+      const [groupId = '', botId = ''] = String(entry).split(':')
+      return { groupId: groupId.trim(), botId: botId.trim() }
+    })
+    .filter(target => target.groupId)
+
+const getPushAdapterInfo = (targets: Array<{ botId: string }>): ReturnType<typeof getAdapterInfo> => {
+  const globalScope = globalThis as unknown as { Bot?: Record<string, unknown> }
+  for (const { botId } of targets) {
+    if (!botId) continue
+    const bot = globalScope.Bot?.[botId]
+    if (!bot) continue
+    const info = getAdapterInfo({ bot } as MessageEvent)
+    if (info) return info
+  }
+  return undefined
+}
+
 const buildApiErrorImage = async (
   platform: string,
   method: string,
   err: ApiErrorRecord,
-  event?: BaseEvent
+  event?: BaseEvent,
+  pushContext?: { groupWithBot: string[] }
 ): Promise<unknown> => {
   const error = isRecord(err.error) ? err.error : isRecord(err.data) ? err.data : {}
   // 事件形状比 BaseEvent 宽；适配器与群/用户信息只做只读取值。
   const messageEvent = event as MessageEvent | undefined
   const groupId = messageEvent?.group_id || messageEvent?.groupId || 'private'
   const userId = messageEvent?.user_id || messageEvent?.userId || messageEvent?.sender?.user_id || 'unknown'
+  const pushTargets = pushContext ? parsePushTargets(pushContext.groupWithBot) : []
+  const contextEntries = messageEvent
+    ? buildContextLogEntries(groupId, userId)
+    : pushTargets.flatMap(target => buildContextLogEntries(target.groupId))
 
   const name = String(error.name || error.errorCode || error.code || 'APIError')
   const message = String(error.message || error.errorDescription || err?.message || 'API 请求失败')
@@ -230,11 +255,11 @@ const buildApiErrorImage = async (
       },
       logs: [
         ...getActiveLogEntries().filter(entry => entry.level !== 'TRAC').reverse(),
-        ...buildContextLogEntries(groupId, userId)
+        ...contextEntries
       ],
       buildTime: buildMetadata?.buildTime ? formatBuildTime(buildMetadata.buildTime) : undefined,
       commitHash: buildMetadata?.shortCommitHash || buildMetadata?.commitHash,
-      adapterInfo: getAdapterInfo(messageEvent)
+      adapterInfo: messageEvent ? getAdapterInfo(messageEvent) : getPushAdapterInfo(pushTargets)
     })
   } catch (renderError: unknown) {
     // 和 ErrorHandler/render.ts 的 renderErrorReport 对齐：渲染失败必须退化成文本。
@@ -332,6 +357,8 @@ const buildApiErrorImage = async (
 export class Base {
   /** 事件对象。子类沿用旧实现在构造后重新赋值，故不可设为 readonly */
   e: BaseEvent | undefined
+  /** 定时推送接口报错时使用的目标上下文；消息事件路径不需要它。 */
+  pushContext: { groupWithBot: string[] } | undefined = undefined
   headers: AxiosRequestConfig['headers']
   /**
    * amagi 客户端。
@@ -415,7 +442,7 @@ export class Base {
             const event = self.e ?? e
 
             if (property === 'getDouyinData' && result.code !== 200) {
-              const img = await buildApiErrorImage('douyin', String(property), result, event)
+              const img = await buildApiErrorImage('douyin', String(property), result, event, self.pushContext)
               if (Object.keys(event ?? {}).length === 0) {
                 await sendMasterMessage('douyin', img)
                 throw new Error(getApiErrorMessage(result))
@@ -446,7 +473,7 @@ export class Base {
                 })
                 throw riskError
               }
-              const img = await buildApiErrorImage('bilibili', String(property), result, event)
+              const img = await buildApiErrorImage('bilibili', String(property), result, event, self.pushContext)
               if (Object.keys(event ?? {}).length === 0) {
                 await sendMasterMessage('bilibili', img)
                 throw new Error(result.message)

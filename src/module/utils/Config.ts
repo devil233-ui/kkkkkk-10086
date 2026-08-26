@@ -21,6 +21,7 @@ import type {
 } from '@/types/config'
 import YamlReader from './YamlReader.js'
 import Version from './Version.js'
+import { normalizeCookieValue } from './cookie.js'
 
 export type {
   BilibiliPushItem,
@@ -146,7 +147,13 @@ export class Cfg {
   }
 
   get cookies (): CookiesConfig {
-    return this.getDefOrConfig('cookies')
+    const raw = this.getDefOrConfig('cookies') as unknown as Record<string, unknown>
+    return {
+      bilibili: normalizeCookieValue(raw.bilibili),
+      douyin: normalizeCookieValue(raw.douyin),
+      kuaishou: normalizeCookieValue(raw.kuaishou),
+      xiaohongshu: normalizeCookieValue(raw.xiaohongshu)
+    }
   }
 
   get douyin (): DouyinConfig {
@@ -291,6 +298,9 @@ export class Cfg {
     watcher.on('add', scheduleReload)
     watcher.on('change', scheduleReload)
     watcher.on('unlink', scheduleReload)
+    watcher.on('error', (error: unknown) => {
+      logger.error(`[Config] 配置文件监听出错，${name}.yaml 的热重载可能已失效:`, error)
+    })
     this.watcher[key] = watcher
   }
 
@@ -537,8 +547,8 @@ export class Cfg {
       const value: unknown = YAML.parse(fs.readFileSync(file, 'utf8'))
       if (!isRecord(value)) throw new TypeError('YAML root must be a non-array record')
       return { valid: true, value }
-    } catch {
-      logger.warn(`[Config] 解析配置文件失败: ${file}`)
+    } catch (error: unknown) {
+      logger.error(`[Config] 解析配置文件失败，该文件的配置已全部退回默认值: ${file}`, error)
       return { valid: false, value: {} }
     }
   }

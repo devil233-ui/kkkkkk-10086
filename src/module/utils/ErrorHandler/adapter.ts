@@ -55,11 +55,11 @@ const getLabels = (event: MessageEvent): string[] => {
 }
 
 const getStandard = (labels: string[], explicit: unknown): string => {
-  const value = firstText(explicit)
-  if (value) return value
+  const value = firstText(explicit).toLowerCase()
+  if (value) return value === 'onebot' ? 'onebot11' : value
   const joined = labels.join(' ').toLowerCase()
-  if (joined.includes('milky')) return 'Milky'
-  if (joined.includes('satori') || joined.includes('chronocat')) return 'Satori'
+  if (joined.includes('milky')) return 'milky'
+  if (joined.includes('satori') || joined.includes('chronocat')) return 'satori'
   if (
     joined.includes('onebot') ||
     joined.includes('napcat') ||
@@ -67,12 +67,15 @@ const getStandard = (labels: string[], explicit: unknown): string => {
     joined.includes('llonebot') ||
     joined.includes('gocq') ||
     joined.includes('go-cq')
-  ) return 'OneBot'
+  ) return 'onebot11'
   // QQBot 走官方 Bot 开放平台接口，不属于上面任何一种社区协议标准。
   // 判定放在 OneBot 之后：'qqbot' 不含 'onebot'，但 OneBot 实现的 apk 信息里可能带 QQ 字样。
-  if (joined.includes('qqbot')) return 'QQBot'
+  if (joined.includes('qqbot')) return 'qqbot'
   return 'unknown'
 }
+
+const isWebSocketLike = (value: AdapterRecord): boolean =>
+  typeof value.readyState === 'number' && typeof value.send === 'function'
 
 /**
  * Normalize the adapter fields exposed by different Yunzai protocols.
@@ -129,9 +132,18 @@ export const getAdapterInfo = (event?: MessageEvent): ErrorAdapterInfo | undefin
     adapterRecord.communication,
     adapterRecord.transport,
     adapterRecord.mode,
-    adapterRecord.type,
-    'unknown'
+    adapterRecord.type
   )
+  const socket = [
+    asRecord(event.bot?.ws),
+    asRecord(adapterRecord.ws),
+    asRecord(asRecord(event.bot?.sdk).ws)
+  ].find(isWebSocketLike)
+  const resolvedCommunication = communication || (socket
+    ? typeof socket._isServer === 'boolean'
+      ? socket._isServer ? 'webSocketServer' : 'webSocketClient'
+      : asText(socket.url) ? 'webSocketClient' : 'webSocketServer'
+    : 'unknown')
 
   return {
     name,
@@ -139,7 +151,7 @@ export const getAdapterInfo = (event?: MessageEvent): ErrorAdapterInfo | undefin
     protocol,
     platform,
     standard: getStandard(labels, adapterRecord.standard),
-    communication,
+    communication: resolvedCommunication,
     labels
   }
 }

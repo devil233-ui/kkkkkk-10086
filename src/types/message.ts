@@ -61,6 +61,10 @@ export interface MessageBot {
   adapter?: string | BotAdapterInfo
   apk?: { display?: string; version?: string }
   version?: BotVersionInfo
+  /** 适配器挂载的 WebSocket 连接，仅用于错误卡判断通信方向。 */
+  ws?: unknown
+  /** 部分协议把 WebSocket 放在 SDK 实例上，仅用于错误卡判断通信方向。 */
+  sdk?: unknown
   setMsgReaction?: (
     contact: unknown,
     messageId: MessageId,

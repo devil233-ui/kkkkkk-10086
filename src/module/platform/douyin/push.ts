@@ -761,6 +761,8 @@ export class DouYinpush extends Base {
 
           const pushTypes = normalizePushTypes(item.pushTypes)
           logger.debug(`开始获取用户：${item.remark}（${sec_uid}）的抖音内容，推送类型：${pushTypes.join(', ')}`)
+          // 定时任务没有事件对象，接口错误卡片需要从当前订阅取得目标群和机器人。
+          this.pushContext = { groupWithBot: item.group_id }
           const userinfo = await this.amagi.getDouyinData('用户主页数据', { sec_uid, typeMode: 'strict' }) as DouyinProfileResponse
 
           const targets = item.group_id.map(groupWithBot => {
@@ -809,6 +811,9 @@ export class DouYinpush extends Base {
             `[抖音推送] 用户 ${item.remark || item.short_id || item.sec_uid || '未知'}本轮跳过：${error instanceof Error ? error.message : String(error)}`
           )
           continue
+        } finally {
+          // 循环有多个 continue，必须清理，避免下一个订阅沿用上一项的目标上下文。
+          this.pushContext = undefined
         }
       }
     } catch (error) {

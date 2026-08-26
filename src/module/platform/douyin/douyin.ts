@@ -237,6 +237,10 @@ let img: Awaited<ReturnType<typeof Render>>
 
 const getFirstUrl = (data?: UrlResource): string => data?.url_list?.find(Boolean) || ''
 
+/** 优先使用签名直链，避免包装 URL 302 到无法播放的 CDN 节点。 */
+export const pickDouyinPlayUrl = (playAddr?: UrlResource): string =>
+  playAddr?.url_list?.[0] || playAddr?.url_list?.[1] || playAddr?.url_list?.[2] || ''
+
 const formatVideoStats = (statistics: DouyinAweme['statistics'] = {}): string => [
   `\n点赞：${Common.count(statistics.digg_count)}`,
   `评论：${Common.count(statistics.comment_count)}`,
@@ -519,9 +523,12 @@ export class DouYin extends Base {
                   }
                 }
                 if (hasGeneratedLivePhoto) images.push(await buildLivePhotoTipMessage())
-                const Element = common.makeForwardMsg(this.e, images, '合辑内容')
                 try {
-                  await this.e.reply(Element)
+                  if (images.length === 0) {
+                    logger.warn(`抖音合辑解析未生成可发送内容，aweme_id=${VideoData.data.aweme_detail.aweme_id}`)
+                  } else {
+                    await this.e.reply(common.makeForwardMsg(this.e, images, '合辑内容'))
+                  }
                 } catch (error) {
                   logger.error(error)
                 } finally {
@@ -591,23 +598,9 @@ export class DouYin extends Base {
               分享链接：${logger.green(VideoData.data.aweme_detail.share_url)}
               `)
               video.bit_rate = douyinProcessVideos(video.bit_rate, Config.upload.filelimit || 100)
-              g_video_url = await new Networks({
-                url: video.bit_rate[0].play_addr.url_list[2] || '',
-                headers: {
-                  ...this.headers,
-                  Referer: video.bit_rate[0].play_addr.url_list[0] || '',
-                  Cookie: ''
-                }
-              }).getLongLink()
+              g_video_url = pickDouyinPlayUrl(video.bit_rate[0].play_addr)
             } else {
-              g_video_url = await new Networks({
-                url: video.play_addr_h264.url_list[2] || '',
-                headers: {
-                  ...this.headers,
-                  Referer: video.play_addr_h264.url_list[0] || video.play_addr_h264.url_list[0],
-                  Cookie: ''
-                }
-              }).getLongLink()
+              g_video_url = pickDouyinPlayUrl(video.play_addr_h264)
             }
             cover = getFirstUrl(video.animated_cover) || getFirstUrl(video.dynamic_cover) || getFirstUrl(video.cover_original_scale) || getFirstUrl(video.cover) || getFirstUrl(video.origin_cover)
 
