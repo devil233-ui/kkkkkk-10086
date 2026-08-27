@@ -15,6 +15,10 @@ import { getDouyinWorkCoverUrl, isDouyinArticle, isDouyinImage, isDouyinVideo } 
 import { resolveDouyinMusicUrl } from './helpers.js'
 import { classifyMessageSendResult, isSendTimeoutError } from '@/module/utils/messageSend'
 import common from '@/runtime/host/common'
+import {
+  DouyinPushFailureTracker,
+  type DouyinPushRunSummary
+} from './pushFailure.js'
 
 /**
  * @typedef {import('@ikenxuan/amagi').ApiResponse} ApiResponse
@@ -73,6 +77,28 @@ const DOUYIN_CARD_SEND_TIMEOUT = 30_000
 const DOUYIN_MEDIA_SEND_TIMEOUT = 180_000
 let activePushTask: Promise<boolean | void> | undefined
 let activePushStartedAt = 0
+const scheduledPushFailureTracker = new DouyinPushFailureTracker()
+
+const emptyPushRunSummary = (): DouyinPushRunSummary => ({ attempted: 0, failed: 0, reasons: [] })
+
+const summarizeFailure = (error: unknown): string => {
+  const message = error instanceof Error ? error.message : String(error)
+  return message.replace(/\s+/g, ' ').trim().slice(0, 160) || '未知错误'
+}
+
+const sendScheduledPushFailureWarning = (summary: DouyinPushRunSummary, consecutiveFailures: number): void => {
+  const reasons = summary.reasons.slice(0, 3).join('；') || '未提供具体原因'
+  const message = [
+    '抖音推送连续 3 轮存在实际发送失败',
+    `失败任务：${summary.failed}/${summary.attempted}（连续第 ${consecutiveFailures} 轮）`,
+    `示例：${reasons}`,
+    '请检查机器人在线状态、群权限、网络或渲染资源。'
+  ].join('\n')
+
+  Promise.resolve().then(() => Bot?.sendMasterMsg(message)).catch(error => {
+    logger.warn(`[抖音推送] 发送失败告警给主人失败: ${summarizeFailure(error)}`)
+  })
+}
 
 /** 抖音推送支持的类型，与数据库层共用同一套字面量 */
 export type { DouyinPushType } from '@/types/database'
@@ -295,6 +321,8 @@ export class DouYinpush extends Base {
    */
   constructor (e?: DouyinPushEvent, force = false) {
     super(e)
+    // 定时推送只在实际作品发送阶段统计失败；交互式解析仍由 Base 生成原有错误回复。
+    this.suppressScheduledApiErrorCards = true
     // 这里原来直接拦掉 QQBot：`if (this.botadapter === 'QQBot') { reply('不支持QQBot'); return }`。
     // QQBot 开启全量消息后主动推送不再受限，所以这道拦截去掉。
     //
@@ -340,17 +368,34 @@ export class DouYinpush extends Base {
       await this.ensureConfigFields(Config.pushlist.douyin || [])
 
       // 检查备注信息
-      if (await this.checkremark()) return true
+      if (await this.checkremark()) {
+        this.recordScheduledPushResult(emptyPushRunSummary())
+        return true
+      }
 
       const data = await this.getDynamicList(Config.pushlist.douyin || [])
 
-      if (Object.keys(data).length === 0) return true
+      if (Object.keys(data).length === 0) {
+        this.recordScheduledPushResult(emptyPushRunSummary())
+        return true
+      }
 
-      if (this.force) return await this.forcepush(data)
-      else return await this.getdata(data)
+      const summary = this.force ? await this.forcepush(data) : await this.getdata(data)
+      this.recordScheduledPushResult(summary)
+      return true
     } catch (error) {
+      this.recordScheduledPushResult(emptyPushRunSummary())
       logger.error(error)
       return false
+    }
+  }
+
+  /** 只对定时任务记录实际发送失败，通知本身异步执行，不阻塞下一轮推送。 */
+  private recordScheduledPushResult (summary: DouyinPushRunSummary): void {
+    if (this.e) return
+    const decision = scheduledPushFailureTracker.record(summary)
+    if (decision.shouldNotify) {
+      sendScheduledPushFailureWarning(decision, decision.consecutiveFailures)
     }
   }
 
@@ -429,15 +474,24 @@ export class DouYinpush extends Base {
   /**
    * 获取并处理抖音动态数据
    * @param {WillBePushList} data - 待推送的抖音动态数据列表
-   * @returns {Promise<boolean>} - 返回处理结果，成功返回true
+   * @returns {Promise<DouyinPushRunSummary>} - 返回本轮实际发送与失败统计
    */
-  async getdata (data: WillBePushList): Promise<boolean> {
+  async getdata (data: WillBePushList): Promise<DouyinPushRunSummary> {
+    const summary = emptyPushRunSummary()
     try {
-      // 检查数据是否为空，为空则直接返回true
-      if (Object.keys(data).length === 0) return true
+      // 检查数据是否为空，为空则表示本轮没有实际待发送任务
+      if (Object.keys(data).length === 0) return summary
 
       // 遍历每个动态数据
       for (const awemeId in data) {
+        let itemAttempted = false
+        let itemFailed = false
+        let itemFailureReason = ''
+        const markItemFailure = (reason: unknown): void => {
+          itemFailed = true
+          if (!itemFailureReason) itemFailureReason = summarizeFailure(reason)
+        }
+
         try {
           const pushItem = data[awemeId]
           if (!pushItem) continue
@@ -455,6 +509,10 @@ export class DouYinpush extends Base {
           const Detail_Data = pushItem.Detail_Data
           // 检查是否跳过该动态
           const skip = await skipDynamic(pushItem)
+          if (!skip && pushItem.targets.length > 0) {
+            itemAttempted = true
+            summary.attempted += 1
+          }
           /**
          * @type {import('@kaguyajs/trss-yunzai-types').icqq.segment[]}
          */
@@ -551,6 +609,7 @@ export class DouYinpush extends Base {
           // Render 返回 false 或空数组表示本次渲染失败，保留未推送状态供下次重试。
           if (!skip && (!img || (Array.isArray(img) && img.length === 0))) {
             logger.warn(`[Douyin Push] 作品${actualAwemeId}渲染失败，不写入缓存，等待下一轮重试`)
+            markItemFailure('作品卡片渲染失败')
             continue
           }
 
@@ -569,6 +628,7 @@ export class DouYinpush extends Base {
 
             if (!group) {
               logger.warn(`bot${botId}不存在或群${groupId}不存在`)
+              if (!skip) markItemFailure(`目标群 ${groupId} 或机器人 ${botId} 不可用`)
               continue
             }
 
@@ -594,6 +654,7 @@ export class DouYinpush extends Base {
                   logger.warn(`[Douyin Push] 作品${actualAwemeId}卡片发送超时，大概率已送达，写入去重缓存后继续处理`)
                   cardAccepted = true
                 } else {
+                  markItemFailure(sendError)
                   throw sendError
                 }
               }
@@ -724,20 +785,27 @@ export class DouYinpush extends Base {
               } else if (cardAccepted) {
                 logger.error(`[Douyin Push] 发送${actualAwemeId}的附加内容失败:`, error)
               } else {
+                markItemFailure(error)
                 logger.error(`[Douyin Push] 发送${actualAwemeId}失败，未写入缓存:`, error)
               }
             }
           }
         } catch (error) {
+          if (itemAttempted) markItemFailure(error)
           logger.error(`[Douyin Push] 动态 ${awemeId} 处理失败，未写入缓存，等待下轮重试:`, error)
           continue
+        } finally {
+          if (itemAttempted && itemFailed) {
+            summary.failed += 1
+            summary.reasons.push(`${data[awemeId]?.remark || '未知博主'}/${awemeId}: ${itemFailureReason || '发送失败'}`)
+          }
         }
       }
     } catch (e) {
       logger.error('获取抖音动态列表失败', e)
-      return false
+      return summary
     }
-    return true
+    return summary
   }
 
   /**
@@ -1179,7 +1247,7 @@ export class DouYinpush extends Base {
    * 强制推送
    * @param {WillBePushList} data 处理完成的推送列表
    */
-  async forcepush (data: WillBePushList): Promise<void> {
+  async forcepush (data: WillBePushList): Promise<DouyinPushRunSummary> {
     const event = this.e as DouyinPushEvent
     const currentGroupId = String(event.group_id || event.groupId || '')
     const currentBotId = String(event.self_id || event.selfId || '')
@@ -1209,10 +1277,10 @@ export class DouYinpush extends Base {
       }
 
       // 使用过滤后的数据进行推送
-      await this.getdata(filteredData)
+      return await this.getdata(filteredData)
     } else {
       // 全部强制推送，保持原有逻辑
-      await this.getdata(data)
+      return await this.getdata(data)
     }
   }
 

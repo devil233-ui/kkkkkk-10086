@@ -357,6 +357,8 @@ const buildApiErrorImage = async (
 export class Base {
   /** 事件对象。子类沿用旧实现在构造后重新赋值，故不可设为 readonly */
   e: BaseEvent | undefined
+  /** 定时抖音推送自行统计实际发送失败，避免 API 空结果渲染长告警卡片。 */
+  suppressScheduledApiErrorCards = false
   /** 定时推送接口报错时使用的目标上下文；消息事件路径不需要它。 */
   pushContext: { groupWithBot: string[] } | undefined = undefined
   headers: AxiosRequestConfig['headers']
@@ -442,6 +444,9 @@ export class Base {
             const event = self.e ?? e
 
             if (property === 'getDouyinData' && result.code !== 200) {
+              if (Object.keys(event ?? {}).length === 0 && self.suppressScheduledApiErrorCards) {
+                throw new Error(getApiErrorMessage(result))
+              }
               const img = await buildApiErrorImage('douyin', String(property), result, event, self.pushContext)
               if (Object.keys(event ?? {}).length === 0) {
                 await sendMasterMessage('douyin', img)
