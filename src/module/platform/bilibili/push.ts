@@ -13,6 +13,7 @@ import {
 import type { BilibiliArticleCategoryInput, BilibiliDescV2Item } from './dynamicText.js'
 import { createBilibiliRichTextForwardMessage } from './richtext-message.js'
 import { getBilibiliData } from './api.js'
+import { fetchBilibiliVideoInfo } from './videoInfo.js'
 import { buildLivePhotoMessages as buildCommonLivePhotoMessages, buildLivePhotoTipMessage } from '@/module/platform/common/livePhoto'
 import { buildPushListGroupInfo } from '@/module/platform/common/pushList'
 import { bilibiliDB, cleanOldDynamicCache } from '@/module/db/index'
@@ -622,7 +623,18 @@ export class Bilibilipush extends Base {
             case DynamicType.AV: {
               if (dynamicItem.Dynamic_Data.modules.module_dynamic.major?.type === 'MAJOR_TYPE_ARCHIVE') {
                 const bvid = dynamicItem.Dynamic_Data?.modules.module_dynamic.major?.archive?.bvid || ''
-                const INFODATA = asAmagiResponse<{ data: BilibiliVideoInfo }>(await getBilibiliData('单个视频作品数据', '', { bvid, typeMode: 'strict' }))
+                const rawVideoInfo = await fetchBilibiliVideoInfo(bvid, dynamicItem.remark, {
+                  cookie: Config.cookies.bilibili || '',
+                  request: async (cookie, id) => await getBilibiliData('单个视频作品数据', cookie, { bvid: id, typeMode: 'strict' }),
+                  warn: message => logger.warn(message)
+                })
+                if (!rawVideoInfo) {
+                  // 拿不到作品数据就渲染不出卡片。这里不写去重缓存、只跳过这一条动态，
+                  // 等下一轮风控放行后重推，也不让它把同批次其他 UP 的推送一起带崩。
+                  logger.warn(`UP主：${dynamicItem.remark} 的视频动态 ${dynamicId} 本轮跳过，下一轮重试`)
+                  continue
+                }
+                const INFODATA = asAmagiResponse<{ data: BilibiliVideoInfo }>(rawVideoInfo)
                 dycrad = INFODATA.data.data
 
                 if (INFODATA.data.data.redirect_url) {
