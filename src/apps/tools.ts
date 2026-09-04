@@ -1,10 +1,6 @@
 import { KuaiShou, GetKuaishouID, KuaishouData } from '@/module/platform/kuaishou/index'
-import { Bilibili, getBilibiliID } from '@/module/platform/bilibili/index'
-import { DouYin, extractDouyinUrl, getDouyinID } from '@/module/platform/douyin/index'
-import { Xiaohongshu, getXiaohongshuID } from '@/module/platform/xiaohongshu/index'
-import { Config, Common, UploadRecord, wrapWithErrorHandler, downloadVideo, baseHeaders } from '@/module/utils/index'
+import Config from '@/module/utils/Config'
 import { getStatisticsDB } from '@/module/db/index'
-import { getDouyinData } from '@/module/platform/douyin/api'
 import type { BilibiliIdData } from '@/module/platform/bilibili/getid'
 import type { ErrorHandlerPlugin } from '@/module/utils/ErrorHandler/strategy'
 import { EmojiReactionManager } from '@/module/utils/EmojiReaction'
@@ -13,7 +9,6 @@ import {
   type ParseJobIdentity,
   type ParseTarget
 } from '@/module/utils/ParseCoordinator'
-import { createEmojiParseReactionPort } from '@/module/utils/ParseReactionAdapter'
 import { XIAOHONGSHU_LINK_PATTERN } from '@/module/platform/xiaohongshu/link'
 import type { CommandEvent, MessageEvent } from '@/types/message'
 import type { Platform } from '@/types/platform'
@@ -195,6 +190,7 @@ export class kkkTools extends plugin {
    */
   async prefix (e: CommandEvent): Promise<boolean> {
     const originalMsg = e.msg || ''
+    const { default: Common } = await import('@/module/utils/Common')
     e.msg = await Common.getReplyMessage(e)
 
     if (/^#?弹幕解析/.test(originalMsg)) {
@@ -208,6 +204,10 @@ export class kkkTools extends plugin {
         'douyin',
         '抖音直链解析',
         async event => {
+          const [{ downloadVideo }, { baseHeaders }] = await Promise.all([
+            import('@/module/utils/Base'),
+            import('@/module/utils/Networks')
+          ])
           await downloadVideo(event, {
             video_url: event.msg,
             title: {
@@ -238,6 +238,7 @@ export class kkkTools extends plugin {
    * @returns {Promise<boolean>}
    */
   async imageQrCode (e: CommandEvent): Promise<boolean> {
+    const { default: Common } = await import('@/module/utils/Common')
     const msg = await Common.getReplyMessage(e)
     if (!msg || msg === e.msg) return false
     e.msg = msg
@@ -260,6 +261,7 @@ export class kkkTools extends plugin {
     // 包装器回传的就是当前命令事件；闭包引用可保留 `msg: string` 的收窄结果。
     // ErrorHandler 只读取插件的 awaitContext；保留旧实现传入当前 app 实例的行为。
     const pluginContext = this as unknown as ErrorHandlerPlugin
+    const { wrapWithErrorHandler } = await import('@/module/utils/ErrorHandler/handler')
     const handler = wrapWithErrorHandler(() => fn.call(this, e), { businessName, plugin: pluginContext })
     // 旧 JS 在业务函数返回 undefined 时也会原样返回；这里只收窄声明，不改变运行值。
     return await handler(e) as boolean
@@ -272,6 +274,10 @@ export class kkkTools extends plugin {
     fn: ToolsHandler
   ): Promise<boolean> {
     const pluginContext = this as unknown as ErrorHandlerPlugin
+    const [{ wrapWithErrorHandler }, { createEmojiParseReactionPort }] = await Promise.all([
+      import('@/module/utils/ErrorHandler/handler'),
+      import('@/module/utils/ParseReactionAdapter')
+    ])
     const handler = wrapWithErrorHandler(() => fn.call(this, e), {
       businessName,
       platform,
@@ -305,8 +311,13 @@ export class kkkTools extends plugin {
 
   async _douyin (e: CommandEvent): Promise<boolean> {
     const forceBurnDanmaku = /^#?弹幕解析/.test(e.msg)
+    const { extractDouyinUrl } = await import('@/module/platform/douyin/helpers')
     const url = extractDouyinUrl(e.msg)
     if (url) {
+      const [{ getDouyinID }, { DouYin }] = await Promise.all([
+        import('@/module/platform/douyin/getid'),
+        import('@/module/platform/douyin/douyin')
+      ])
       const iddata = await getDouyinID(url)
       const result = await new DouYin(e, iddata, { forceBurnDanmaku }).RESOURCES(iddata)
       if (isDouyinSelectionResult(result)) {
@@ -348,6 +359,7 @@ export class kkkTools extends plugin {
       aweme_id: target.aweme_id
     }
     await this.runWithErrorHandler(e, '抖音主页作品选择解析', async event => {
+      const { DouYin } = await import('@/module/platform/douyin/douyin')
       await new DouYin(event, iddata, {}).RESOURCES(iddata)
       await recordParseStatistics(event, 'douyin')
     })
@@ -385,6 +397,10 @@ export class kkkTools extends plugin {
       return true
     }
 
+    const [{ getBilibiliID }, { Bilibili }] = await Promise.all([
+      import('@/module/platform/bilibili/getid'),
+      import('@/module/platform/bilibili/bilibili')
+    ])
     const iddata = await getBilibiliID(url)
     await new Bilibili(e, iddata, { forceBurnDanmaku }).RESOURCES(iddata)
     await recordParseStatistics(e, 'bilibili')
@@ -435,6 +451,10 @@ export class kkkTools extends plugin {
       return true
     }
 
+    const [{ getXiaohongshuID }, { Xiaohongshu }] = await Promise.all([
+      import('@/module/platform/xiaohongshu/getid'),
+      import('@/module/platform/xiaohongshu/xiaohongshu')
+    ])
     const iddata = await getXiaohongshuID(url)
     await new Xiaohongshu(e, iddata).XiaohongshuHandler(iddata)
     await recordParseStatistics(e, 'xiaohongshu')
@@ -456,6 +476,10 @@ export class kkkTools extends plugin {
       }
 
       // 获取音乐数据
+      const [{ getDouyinData }, { default: UploadRecord }] = await Promise.all([
+        import('@/module/platform/douyin/api'),
+        import('@/module/utils/UploadRecord')
+      ])
       const data = await getDouyinData('音乐数据', Config.cookies.douyin ?? '', {
         music_id: musicIdMatch[1],
         typeMode: 'strict'
@@ -499,6 +523,7 @@ export class kkkTools extends plugin {
     // runWithErrorHandler，只有这里没有，于是 RESOURCES 改成向上抛之后异常会直接漏进
     // Yunzai 的插件派发层——既拿不到错误卡片，也绕过了本插件的日志上下文采集。
     return await this.runWithErrorHandler(e, 'B站番剧选集解析', async event => {
+      const { Bilibili } = await import('@/module/platform/bilibili/bilibili')
       await new Bilibili(event, iddata).RESOURCES(iddata)
       return true
     })

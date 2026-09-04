@@ -1,13 +1,11 @@
 import { bilibiliDB, douyinDB } from '@/module/db/index'
-import { Bilibilipush, getBilibiliID } from '@/module/platform/bilibili/index'
-import { getBilibiliData } from '@/module/platform/bilibili/api'
-import { getDouyinData } from '@/module/platform/douyin/api'
-import { DouYinpush, getDouyinID } from '@/module/platform/douyin/index'
-import { Config, wrapWithErrorHandler } from '@/module/utils/index'
+import Config from '@/module/utils/Config'
 import type { PluginRule, PluginTask } from 'trss-yunzai'
 import type { BilibiliPushItem, DouyinPushItem } from '@/types/config'
 import type { CommandEvent } from '@/types/message'
 import type { Platform } from '@/types/platform'
+import type { Bilibilipush } from '@/module/platform/bilibili/push'
+import type { DouYinpush } from '@/module/platform/douyin/push'
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null
@@ -111,8 +109,11 @@ export class kkkPush extends plugin {
     platform: Platform,
     fn: () => Promise<boolean>
   ): () => Promise<void> {
-    const handler = wrapWithErrorHandler(fn, { businessName, platform })
-    return async () => { await handler(undefined) }
+    return async () => {
+      const { wrapWithErrorHandler } = await import('@/module/utils/ErrorHandler/handler')
+      const handler = wrapWithErrorHandler(fn, { businessName, platform })
+      await handler(undefined)
+    }
   }
 
   /**
@@ -121,6 +122,7 @@ export class kkkPush extends plugin {
    */
   async douyinPush (): Promise<boolean> {
     // 创建DouYinpush实例并执行action方法
+    const { DouYinpush } = await import('@/module/platform/douyin/push')
     await new DouYinpush().action()
     return true
   }
@@ -130,6 +132,7 @@ export class kkkPush extends plugin {
    * 这是一个异步方法，用于调用B站推送类的action方法
    */
   async bilibiliPush (): Promise<boolean> {
+    const { Bilibilipush } = await import('@/module/platform/bilibili/push')
     await new Bilibilipush().action()  // 创建B站推送实例并执行action方法
     return true
   }
@@ -140,9 +143,11 @@ export class kkkPush extends plugin {
    */
   async forcePush (e: CommandEvent): Promise<boolean> {
     if (e.msg.includes('抖音')) {
+      const { DouYinpush } = await import('@/module/platform/douyin/push')
       await new DouYinpush().action()
       return true
     } else if (/[bB]站/.test(e.msg)) {
+      const { Bilibilipush } = await import('@/module/platform/bilibili/push')
       await new Bilibilipush().action()
       return true
     }
@@ -164,6 +169,10 @@ export class kkkPush extends plugin {
 
     // 如果是私聊消息，直接返回true
     if (e.isPrivate) return true
+    const [{ getDouyinData }, { DouYinpush }] = await Promise.all([
+      import('@/module/platform/douyin/api'),
+      import('@/module/platform/douyin/push')
+    ])
     // `?? undefined` 只把 null 换成 undefined：getDouyinData 的 normalizeArgs 对两者都走
     // 「arg1 不是 cookie」分支，运行时行为与迁移前完全一致
     const data = await getDouyinData('搜索数据', Config.cookies.douyin ?? undefined, { query, typeMode: 'strict' })
@@ -201,6 +210,10 @@ export class kkkPush extends plugin {
       await e.reply!('\n请先配置B站Cookie', true)
       return true
     }
+    const [{ getBilibiliData }, { Bilibilipush }] = await Promise.all([
+      import('@/module/platform/bilibili/api'),
+      import('@/module/platform/bilibili/push')
+    ])
     // 使用正则表达式匹配消息格式，提取UID
     const match = /^(\d+)$/.exec(query)
     if (match && match[1]) {
@@ -225,9 +238,11 @@ export class kkkPush extends plugin {
     const platform = e.msg.includes('抖音') ? 'douyin' : 'bilibili'
     if (platform === 'douyin') {
       // 如果是抖音平台，则创建DouYinpush实例并渲染推送列表
+      const { DouYinpush } = await import('@/module/platform/douyin/push')
       await new DouYinpush(e).renderPushList()
     } else {
       // 如果是哔哩哔哩平台，则创建Bilibilipush实例并渲染推送列表
+      const { Bilibilipush } = await import('@/module/platform/bilibili/push')
       await new Bilibilipush(e).renderPushList()
     }
     return true
@@ -285,6 +300,10 @@ export class kkkPush extends plugin {
   }
 
   async ignoreDouyinWork (e: CommandEvent, url: string): Promise<boolean> {
+    const [{ getDouyinID }, { getDouyinData }] = await Promise.all([
+      import('@/module/platform/douyin/getid'),
+      import('@/module/platform/douyin/api')
+    ])
     const idData = await getDouyinID(url, false)
     if (!idData?.aweme_id) {
       await e.reply!('无法解析该抖音作品链接')
@@ -315,6 +334,10 @@ export class kkkPush extends plugin {
   }
 
   async ignoreBilibiliDynamic (e: CommandEvent, url: string): Promise<boolean> {
+    const [{ getBilibiliID }, { getBilibiliData }] = await Promise.all([
+      import('@/module/platform/bilibili/getid'),
+      import('@/module/platform/bilibili/api')
+    ])
     const idData = await getBilibiliID(url, false)
     if (!idData?.dynamic_id) {
       await e.reply!('无法解析该B站动态链接')

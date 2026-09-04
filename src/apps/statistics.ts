@@ -1,6 +1,4 @@
-import { getStatisticsDB } from '@/module/db/index'
 import { buildPushListGroupInfo } from '@/module/platform/common/pushList'
-import { Render } from '@/module/utils/index'
 import type { ParseStatisticsRow, StatisticsPlatform } from '@/types/database'
 import type { CommandEvent, MessageEvent } from '@/types/message'
 
@@ -69,6 +67,7 @@ export class kkkStatistics extends plugin {
       { douyin: 0, bilibili: 0, kuaishou: 0, xiaohongshu: 0 }
     )
     const groupTotalParses = sumPlatformStats(platformData)
+    const { Render } = await import('@/module/utils/Render')
     const img = await Render('statistics/group', {
       // e.group_id 是宿主的 MessageId（string | number），契约要 string
       groupId: String(groupId),
@@ -110,6 +109,7 @@ export class kkkStatistics extends plugin {
     // 这些拼好的结果契约里一个都没有，而必填的 allStats / historyData / groupInfoMap
     // 三个全缺 —— 模板里是 `props.data.allStats.map(...)` 无守卫访问，
     // `#kkk全局解析统计` 一执行就抛 Cannot read properties of undefined
+    const { Render } = await import('@/module/utils/Render')
     const img = await Render('statistics/global', {
       allStats,
       historyData: history.reverse(),
@@ -127,7 +127,8 @@ export class kkkStatistics extends plugin {
  * `getStatisticsDB()` 初始化失败时返回 null，迁移前的代码会在随后的属性访问上抛
  * TypeError；这里把它换成一条能说明原因的错误，抛出时机与传播路径不变。
  */
-const requireStatisticsDB = async (): Promise<NonNullable<Awaited<ReturnType<typeof getStatisticsDB>>>> => {
+const requireStatisticsDB = async () => {
+  const { getStatisticsDB } = await import('@/module/db/index')
   const statisticsDB = await getStatisticsDB()
   if (!statisticsDB) throw new Error('解析统计数据库未初始化')
   return statisticsDB

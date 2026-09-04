@@ -1,6 +1,4 @@
-import { Render, Config } from '@/module/utils/index'
-import { collectRuntimeReport } from '@/module/utils/runtime-report'
-import { checkYunzaiVersion } from '@/module/utils/yunzaiVersion'
+import Config from '@/module/utils/Config'
 import type { CommandEvent } from '@/types/message'
 
 /**
@@ -247,6 +245,11 @@ export class kkkHelp extends plugin {
 
   /** `#kkk版本`：运行环境诊断卡，宿主版本偏低时追加一张升级告警卡 */
   async version (e: CommandEvent): Promise<boolean> {
+    const [{ Render }, { collectRuntimeReport }, { checkYunzaiVersion }] = await Promise.all([
+      import('@/module/utils/Render'),
+      import('@/module/utils/runtime-report'),
+      import('@/module/utils/yunzaiVersion')
+    ])
     const img = await Render('other/runtime', collectRuntimeReport(e))
     await e.reply!(img)
 
@@ -264,6 +267,7 @@ export class kkkHelp extends plugin {
   }
 
   async help (e: CommandEvent): Promise<boolean> {
+    const { Render } = await import('@/module/utils/Render')
     const role: HelpRole = e.isMaster ? 'master' : 'member'
     const menu = buildMenuForRole(role)
     // 契约里 list 必填。Help.tsx 目前只读 menu，但上游是把菜单摊平填进来的，

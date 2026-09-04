@@ -57,13 +57,17 @@ export const initAllDatabases = async (): Promise<{
     getStatisticsDB()
   ])
 
+  douyinDBInstance = douyin
+  bilibiliDBInstance = bilibili
+  statisticsDBInstance = statistics
+
   return { douyinDB: douyin, bilibiliDB: bilibili, statisticsDB: statistics }
 }
 
-// 导出数据库实例（延迟初始化）
-const douyinDBInstance = await getDouyinDB()
-const bilibiliDBInstance = await getBilibiliDB()
-const statisticsDBInstance = await getStatisticsDB()
+// 导出数据库实例（由 initAllDatabases 在入口阶段填充）
+let douyinDBInstance: DouyinDBBase | null = null
+let bilibiliDBInstance: BilibiliDBBase | null = null
+let statisticsDBInstance: StatisticsDBBase | null = null
 
 /**
  * 清理旧的动态缓存记录

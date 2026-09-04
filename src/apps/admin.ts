@@ -1,6 +1,5 @@
-import { Config, Version, Common } from '@/module/utils/index'
-import { bilibiliLogin } from '@/module/platform/bilibili/login'
-import { dylogin } from '@/module/platform/douyin/login'
+import Config from '@/module/utils/Config'
+import Version from '@/module/utils/Version'
 import fs from 'fs'
 import type { PluginTask } from 'trss-yunzai'
 import type { ConfigName } from '@/types/config'
@@ -215,6 +214,7 @@ export class kkkAdmin extends plugin {
   }
 
   async deltemp (): Promise<boolean> {
+    const { default: Common } = await import('@/module/utils/Common')
     await removeAllFiles(Common.tempDri.video)
       .then(() => logger.warn(Common.tempDri.video + '所有文件已删除'))
       .catch((err: unknown) => logger.error('删除文件时出错:', err))
@@ -261,12 +261,14 @@ export class kkkAdmin extends plugin {
   }
 
   async Blogin (e: CommandEvent): Promise<boolean> {
+    const { bilibiliLogin } = await import('@/module/platform/bilibili/login')
     // 同 dylogin：bilibiliLogin 只用到 reply 与 bot.recallMsg，且把 reply 声明为必填；命令事件上必然带 reply
     await bilibiliLogin(e as Parameters<typeof bilibiliLogin>[0])
     return true
   }
 
   async dylogin (e: CommandEvent): Promise<boolean> {
+    const { dylogin } = await import('@/module/platform/douyin/login')
     // dylogin 只用到 reply 与 bot.recallMsg，而其形参把 reply 声明为必填；命令事件上必然带 reply
     await dylogin(e as Parameters<typeof dylogin>[0], {
       waitForCode: async prompt => {

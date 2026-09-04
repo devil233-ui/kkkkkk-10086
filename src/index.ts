@@ -1,20 +1,23 @@
+import { mkdir } from 'node:fs/promises'
+import { basename, join } from 'node:path'
 import { loadApps } from './module/loader/index.js'
-import Common from './module/utils/Common.js'
 import Config from './module/utils/Config.js'
+import { PluginPath } from './dir.js'
 
 // 初始化数据库
 const { initAllDatabases } = await import('@/module/db/index')
 await initAllDatabases()
 
 // 定义需要创建的目录
+const tempRoot = join(process.cwd(), 'temp', basename(PluginPath), 'kkkdownload')
 const dirs = [
-  Common.tempDri.images,
-  Common.tempDri.video
+  join(tempRoot, 'images'),
+  join(tempRoot, 'video')
 ]
 
 // 并行创建所有目录
 try {
-  await Promise.all(dirs.map(dir => Common.mkdir(dir)))
+  await Promise.all(dirs.map(dir => mkdir(dir, { recursive: true })))
   logger.info('所有目录创建成功')
 } catch (e) {
   logger.error('创建目录失败', e)

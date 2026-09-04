@@ -1,5 +1,4 @@
-import { DouyinPushPreview } from '@/module/platform/douyin/pushPreview'
-import { Config, wrapWithErrorHandler } from '@/module/utils/index'
+import Config from '@/module/utils/Config'
 import type { CommandEvent } from '@/types/message'
 
 const HELP = [
@@ -28,6 +27,7 @@ export class kkkTestPush extends plugin {
   }
 
   async testDouyinPush (e: CommandEvent): Promise<boolean> {
+    const { wrapWithErrorHandler } = await import('@/module/utils/ErrorHandler/handler')
     // wrapWithErrorHandler 会把这里传入的同一个事件对象回传给业务函数，直接闭包引用即可
     const handler = wrapWithErrorHandler(() => this.handleDouyinPush(e), { businessName: '测试抖音推送' })
     return await handler(e)
@@ -52,6 +52,7 @@ export class kkkTestPush extends plugin {
       return true
     }
 
+    const { DouyinPushPreview } = await import('@/module/platform/douyin/pushPreview')
     const preview = new DouyinPushPreview(e)
     const result = pushType === '作品'
       ? await preview.renderWork(url)

@@ -1,10 +1,7 @@
 import { execFileSync } from 'node:child_process'
 
 import { PluginPath } from '@/dir'
-import { Render } from '@/module/utils/index'
 import Version from '@/module/utils/Version'
-// 宿主导出的类名是小写的 update，这里改名以便与本文件的 update 方法区分
-import { update as HostUpdate } from '@/runtime/host/update'
 import type { CommandEvent } from '@/types/message'
 
 /** git 探测的超时时间，和 release-channel.ts 取同一个量级：别让卡住的 git 冻死 bot */
@@ -105,6 +102,8 @@ export class kkkUpdate extends plugin {
     msg = msg.replace(/kkk(插件)?/, '')
     msg += Version.pluginName
     e.msg = msg
+    // 更新实现只在主人明确执行更新命令时需要，启动阶段不加载宿主更新模块。
+    const { update: HostUpdate } = await import('@/runtime/host/update')
     const up = new HostUpdate(e)
     up.e = e
     up.update()
@@ -129,6 +128,7 @@ export class kkkUpdate extends plugin {
       return true
     }
 
+    const { Render } = await import('@/module/utils/Render')
     const img = await Render('other/changelog', {
       markdown: commitsToMarkdown(commits),
       // 这条命令只列本地 git 的提交，不联网比对版本，所以不进「更新提示」分支
