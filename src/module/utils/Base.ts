@@ -89,6 +89,8 @@ interface UploadFileOptions {
     group_id: string
   }
   forceLocal?: boolean
+  /** 主动推送目标短暂离线时的等待上限，默认不等待；只在发送前等待，不重试已提交的消息。 */
+  targetWaitTimeoutMs?: number
 }
 
 interface UploadFileDependencies {
@@ -886,9 +888,24 @@ export const uploadFile = async (
     const uploadType = useGroupFile ? '群文件' : '消息'
     logger.mark(`${msgType}消息: ${newFileSize.toFixed(1)}MB 通过${uploadType}上传`)
 
-    const target = isActiveMessage && options?.activeOption?.uin
-      ? Bot?.[options.activeOption.uin]?.pickGroup(options.activeOption.group_id)
+    const resolveTarget = (): MessageTarget | undefined => isActiveMessage && options?.activeOption?.uin
+      ? toMessageTarget(Bot?.[options.activeOption.uin]?.pickGroup(options.activeOption.group_id))
       : toMessageTarget(e.isGroup ? e.group : e.friend)
+    let target = resolveTarget()
+    const waitMs = Math.min(90_000, Math.max(0, options?.targetWaitTimeoutMs ?? 0))
+    if (isActiveMessage && !target && waitMs > 0) {
+      // OneBot断开时宿主会移除机器人；必须重新取目标，不能复用下载前的旧连接。
+      logger.warn('视频已下载，机器人暂时离线，等待连接恢复后发送')
+      const deadline = Date.now() + waitMs
+      while (!target && Date.now() < deadline) {
+        await new Promise<void>(resolve => setTimeout(resolve, Math.min(1000, deadline - Date.now())))
+        target = resolveTarget()
+      }
+      if (!target) {
+        logger.warn('机器人连接尚未恢复，视频未能发送；保留已发送的卡片，不重复推送')
+        return false
+      }
+    }
 
     if (useGroupFile) {
       if (botAdapter === 'ICQQ') {

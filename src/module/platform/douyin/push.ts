@@ -5,7 +5,7 @@ import type { DouyinFilterPushItem } from '@/module/db/douyin'
 import type { DouyinPushType } from '@/types/database'
 import type { DouyinPushItem as DouyinPushConfigItem } from '@/types/config'
 import type { DouyinIdData } from './getid.js'
-import { getDouyinID, douyinProcessVideos } from './index.js'
+import { getDouyinID, douyinProcessVideos, pickDouyinPlayUrl } from './index.js'
 import { getDouyinData } from './api.js'
 import { buildLivePhotoMessages, buildLivePhotoTipMessage } from '@/module/platform/common/livePhoto'
 import { buildPushListGroupInfo } from '@/module/platform/common/pushList'
@@ -204,8 +204,8 @@ interface DouyinAweme {
   }
   video?: {
     play_addr?: DouyinVideoAddress
-    play_addr_h264?: DouyinVideoAddress
-    bit_rate?: DouyinBitRate[]
+    play_addr_h264?: DouyinVideoAddress | null
+    bit_rate?: DouyinBitRate[] | null
   }
   music?: DouyinMusic
   images?: DouyinLiveImageItem[]
@@ -242,8 +242,8 @@ interface DouyinWorkDetailData extends DouyinDetailData {
   statistics: NonNullable<DouyinAweme['statistics']>
   video: {
     play_addr: DouyinVideoAddress & { uri: string }
-    play_addr_h264: DouyinVideoAddress & { url_list: string[] }
-    bit_rate: DouyinBitRate[]
+    play_addr_h264?: DouyinVideoAddress | null
+    bit_rate?: DouyinBitRate[] | null
   }
 }
 
@@ -675,34 +675,20 @@ export class DouYinpush extends Base {
                 // 如果新作品是视频
                 if (isVideo) {
                   try {
-                    /** 默认视频下载地址 */
-                    let downloadUrl = `https://aweme.snssdk.com/aweme/v1/play/?video_id=${workData.video.play_addr.uri}&ratio=1080p&line=0`
-                    // 根据配置文件自动选择分辨率
-                    if (Config.douyin.autoResolution) {
-                      logger.debug(`开始排除不符合条件的视频分辨率；\n
-                      共拥有${logger.yellow(workData.video.bit_rate.length)}个视频源\n
-                      视频ID：${logger.green(workData.aweme_id)}\n
-                      分享链接：${logger.green(workData.share_url)}
-                      `)
-                      const videoObj = douyinProcessVideos(workData.video.bit_rate as never, Config.upload.filelimit || 100)
-                      downloadUrl = await new Networks({
-                        url: videoObj?.[0]?.play_addr?.url_list?.[0] || '',
-                        headers: {
-                          ...douyinBaseHeaders,
-                          Cookie: ''
-                        }
-                      }).getLongLink()
+                    // 列表接口可能不给bit_rate；复用解析路径的签名直链，避免getLongLink额外下载一遍。
+                    const bitRates = workData.video.bit_rate ?? []
+                    let downloadUrl = ''
+                    if (Config.douyin.autoResolution && bitRates.length > 0) {
+                      const videoObj = douyinProcessVideos(bitRates as never, Config.upload.filelimit || 100)
+                      downloadUrl = pickDouyinPlayUrl(videoObj?.[0]?.play_addr)
                     } else {
-                      downloadUrl = await new Networks({
-                        url: (workData.video.bit_rate[0]?.play_addr.url_list?.[0] || workData.video.play_addr_h264.url_list[0] || workData.video.play_addr_h264.url_list[0]) as string,
-                        headers: {
-                          ...douyinBaseHeaders,
-                          Cookie: ''
-                        }
-                      }).getLongLink()
+                      downloadUrl = pickDouyinPlayUrl(bitRates[0]?.play_addr)
                     }
-                    // 下载视频
-                    await downloadVideo(this.e as BaseEvent, {
+                    downloadUrl ||= pickDouyinPlayUrl(workData.video.play_addr_h264) ||
+                      pickDouyinPlayUrl(workData.video.play_addr)
+                    if (!downloadUrl) throw new Error('接口未返回可用的视频下载地址')
+
+                    const videoSent = await downloadVideo(this.e as BaseEvent, {
                       video_url: downloadUrl,
                       title: { timestampTitle: `tmp_${Date.now()}.mp4`, originTitle: `${workData.desc}.mp4` },
                       headers: {
@@ -710,9 +696,16 @@ export class DouYinpush extends Base {
                         Referer: downloadUrl,
                         Cookie: ''
                       }
-                    }, { active: true, activeOption: { uin: botId, group_id: groupId } })
+                    }, {
+                      active: true,
+                      activeOption: { uin: botId, group_id: groupId },
+                      targetWaitTimeoutMs: 90_000
+                    })
+                    if (!videoSent) {
+                      logger.warn(`[Douyin Push] 作品${actualAwemeId}的视频未确认发送成功，卡片已保留；请检查机器人连接与上传日志`)
+                    }
                   } catch (error) {
-                    logger.error(error)
+                    logger.warn(`[Douyin Push] 作品${actualAwemeId}的视频未能发送，卡片已保留：${summarizeFailure(error)}`)
                   }
                 } else if (isImage && iddata.type === 'one_work') { // 如果新作品是图集
                   /** @type {import ('@kaguyajs/trss-yunzai-types').icqq.segment[]} */
