@@ -100,6 +100,38 @@ const sendScheduledPushFailureWarning = (summary: DouyinPushRunSummary, consecut
   })
 }
 
+/** 单条视频漏发记录：卡片已送达、只有视频没跟上 */
+interface DouyinVideoMissRecord {
+  remark: string
+  awemeId: string
+  groupId: string
+  reason: string
+}
+
+/**
+ * 本轮推送结束后把视频漏发明细私聊主人。
+ *
+ * 只汇总、不重发：卡片已经按去重语义送达群里，这里补一条私聊让主人知道
+ * 「卡片后面的视频没跟上」，fire-and-forget，不阻塞也不计入连续失败告警。
+ * 同一轮多条漏发合并成一条私聊，最多列 5 条，超出只报总数。
+ */
+const sendVideoMissedWarning = (records: DouyinVideoMissRecord[]): void => {
+  const shown = records.slice(0, 5)
+  const lines = shown.map(record =>
+    `· ${record.remark} 的作品 ${record.awemeId}（群${record.groupId}）：${record.reason}`
+  )
+  if (records.length > shown.length) lines.push(`……等共 ${records.length} 条`)
+  const message = [
+    '抖音推送有作品的视频未发出（卡片已送达）',
+    ...lines,
+    '可检查机器人连接状态与上传日志；按策略不重发卡片，视频不补推。'
+  ].join('\n')
+
+  Promise.resolve().then(() => Bot?.sendMasterMsg(message)).catch(error => {
+    logger.warn(`[抖音推送] 视频漏发告警给主人失败: ${summarizeFailure(error)}`)
+  })
+}
+
 /** 抖音推送支持的类型，与数据库层共用同一套字面量 */
 export type { DouyinPushType } from '@/types/database'
 
@@ -478,6 +510,8 @@ export class DouYinpush extends Base {
    */
   async getdata (data: WillBePushList): Promise<DouyinPushRunSummary> {
     const summary = emptyPushRunSummary()
+    /** 本轮「卡片已送达、视频没跟上」的明细，轮末合并成一条私聊 */
+    const missedVideos: DouyinVideoMissRecord[] = []
     try {
       // 检查数据是否为空，为空则表示本轮没有实际待发送任务
       if (Object.keys(data).length === 0) return summary
@@ -702,10 +736,14 @@ export class DouYinpush extends Base {
                       targetWaitTimeoutMs: 90_000
                     })
                     if (!videoSent) {
+                      const reason = '机器人离线或发送结果未确认'
                       logger.warn(`[Douyin Push] 作品${actualAwemeId}的视频未确认发送成功，卡片已保留；请检查机器人连接与上传日志`)
+                      missedVideos.push({ remark: pushItem.remark, awemeId: actualAwemeId, groupId, reason })
                     }
                   } catch (error) {
-                    logger.warn(`[Douyin Push] 作品${actualAwemeId}的视频未能发送，卡片已保留：${summarizeFailure(error)}`)
+                    const reason = summarizeFailure(error)
+                    logger.warn(`[Douyin Push] 作品${actualAwemeId}的视频未能发送，卡片已保留：${reason}`)
+                    missedVideos.push({ remark: pushItem.remark, awemeId: actualAwemeId, groupId, reason })
                   }
                 } else if (isImage && iddata.type === 'one_work') { // 如果新作品是图集
                   /** @type {import ('@kaguyajs/trss-yunzai-types').icqq.segment[]} */
@@ -797,6 +835,9 @@ export class DouYinpush extends Base {
     } catch (e) {
       logger.error('获取抖音动态列表失败', e)
       return summary
+    } finally {
+      // 中途异常退出时也把已发生的漏发补出去；fire-and-forget，不阻塞返回。
+      if (missedVideos.length > 0) sendVideoMissedWarning(missedVideos)
     }
     return summary
   }
