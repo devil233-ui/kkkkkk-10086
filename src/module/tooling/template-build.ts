@@ -76,10 +76,13 @@ const buildTemplatesUnlocked = (force: boolean): void => {
 
   try {
     const pnpmExecutable = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
+    // Windows 上 spawnSync 直接跑 .cmd 在 Node 24 会 EINVAL（安全策略禁止无 shell
+    // 执行批处理），必须带 shell；参数是固定数组，无注入面。
     execFileSync(pnpmExecutable, ['exec', 'ktr', 'build'], {
       cwd: pluginRoot,
       env: { ...process.env, KKK_TEMPLATE_OUT_DIR: tempOutput },
-      stdio: 'inherit'
+      stdio: 'inherit',
+      shell: process.platform === 'win32'
     })
     if (!existsSync(join(tempOutput, 'index.mjs'))) {
       throw new Error(`模板构建未生成入口：${join(tempOutput, 'index.mjs')}`)
