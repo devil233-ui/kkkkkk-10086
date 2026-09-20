@@ -1,4 +1,4 @@
-import { Base, baseHeaders, Networks, Render, Config, Common, downloadFile, downloadVideo, Version, processImageUrl } from '@/module/utils/index'
+import { Base, baseHeaders, Networks, Render, Config, Common, downloadFile, downloadVideo, Version, processImageUrl, UploadRecord } from '@/module/utils/index'
 import type { BaseEvent } from '@/module/utils/Base'
 import { cleanOldDynamicCache, douyinDB } from '@/module/db/index'
 import type { DouyinFilterPushItem } from '@/module/db/douyin'
@@ -86,6 +86,22 @@ const summarizeFailure = (error: unknown): string => {
   return message.replace(/\s+/g, ' ').trim().slice(0, 160) || '未知错误'
 }
 
+/**
+ * 卡片描述的换行处理：模板用 dangerouslySetInnerHTML 渲染 desc，HTML 里 `\n`
+ * 不会换行，实测整段文案挤成一行（对比抖音 App 原文的三段排版）。
+ *
+ * 先做完整 HTML 转义再放行 `<br>`：desc 来自抖音接口原文，里面可能出现
+ * `<`、`&` 之类的字符，直接拼 HTML 等于把接口文本当模板执行。
+ */
+const escapeHtml = (text: string): string => text
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;')
+
+export const descToCardHtml = (text: string): string => escapeHtml(text).replace(/\r\n|\n|\r/g, '<br>')
+
 const sendScheduledPushFailureWarning = (summary: DouyinPushRunSummary, consecutiveFailures: number): void => {
   const reasons = summary.reasons.slice(0, 3).join('；') || '未提供具体原因'
   const message = [
@@ -149,7 +165,8 @@ interface DouyinMusic {
 
 /** 图集中的单张 Live 图，取视频地址时用到的字段 */
 interface DouyinLiveImageItem {
-  clip_type?: number
+  /** 静态图为 2/缺省，实况图 4/6；接口实测会返回 null */
+  clip_type?: number | null
   url_list?: string[]
   video?: {
     play_addr_h264?: { uri?: string }
@@ -607,7 +624,7 @@ export class DouYinpush extends Base {
                   author: workData.author,
                   coverUrl: getDouyinWorkCoverUrl(workDetail),
                   createTime: Common.convertTimestampToDateTime(pushItem.create_time / 1000),
-                  desc: workData.desc,
+                  desc: descToCardHtml(workData.desc),
                   remark: pushItem.remark,
                   shareUrl,
                   statistics: workData.statistics
@@ -619,7 +636,9 @@ export class DouYinpush extends Base {
               } else {
                 img = await Render('douyin/dynamic', {
                   image_url: getDouyinWorkCoverUrl(workDetail),
-                  desc: this.desc(workData, workData.desc),
+                  // 模板用 dangerouslySetInnerHTML 渲染，这里转义后把换行转成 <br>，
+                  // 保留抖音原文的段落排版（实测不处理时整段挤成一行）
+                  desc: descToCardHtml(this.desc(workData, workData.desc)),
                   dianzan: Common.count(workData.statistics.digg_count),
                   pinglun: Common.count(workData.statistics.comment_count),
                   share: Common.count(workData.statistics.share_count),
@@ -802,6 +821,30 @@ export class DouYinpush extends Base {
                         DOUYIN_MEDIA_SEND_TIMEOUT,
                         '抖音图集 sendMsg'
                       )
+                    }
+
+                    // 图集BGM：实况图的BGM已混进生成的视频里，不重复发；
+                    // 纯静态图集（如 /note/ 图文）在这里补一条语音。
+                    // music.play_url 为空时 getDouyinMusicUrl 回退 extra.original_song_url，
+                    // 实测官方曲库 BGM 走的就是这条路（audio/mp4，UploadRecord 会转码）。
+                    if (!hasGeneratedLivePhoto && liveimgbgm?.filepath) {
+                      try {
+                        // 定时任务没有事件对象，UploadRecord 只读 e.bot，直接构造最小事件
+                        const record = await UploadRecord(
+                          { bot: Bot?.[botId] } as unknown as Parameters<typeof UploadRecord>[0],
+                          liveimgbgm.filepath,
+                          0,
+                          !Config.douyin.sendHDrecord
+                        )
+                        await Common.withTimeout(
+                          () => group.sendMsg(record as never),
+                          DOUYIN_MEDIA_SEND_TIMEOUT,
+                          '抖音BGM sendMsg'
+                        )
+                      } catch (error) {
+                        // BGM 是附加内容，失败只告警，不影响图集与视频主链路
+                        logger.warn(`[Douyin Push] 作品${actualAwemeId}的BGM发送失败: ${summarizeFailure(error)}`)
+                      }
                     }
                   } finally {
                     for (const item of temp) await Common.removeFile(item.filepath, true)
