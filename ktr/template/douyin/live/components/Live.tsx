@@ -56,16 +56,35 @@ AmbientBackground.displayName = 'AmbientBackground'
 
 /**
  * 封面组件 - 全宽铺满 + 双向渐变溶解 + LIVE大字
+ *
+ * `image_url` 为空时 `<img>` 没有固有高度，整个封面区塌成一条遮罩渐变带，
+ * 卡片跟着变成窄条（实测 2026-09-20 崩铁前瞻节目直播推送）。数据层会重拉
+ * 一次，这里兜底渲染固定高度占位，保证任何情况下卡片布局正常。
  */
 const CoverSection: React.FC<{ imageUrl: string }> = ({ imageUrl }) => {
+  const liveBadge = (
+    <div className="absolute right-20 top-20 pointer-events-none select-none">
+      <span className="text-7xl font-black tracking-[0.15em] uppercase text-white/20">直播中</span>
+    </div>
+  )
+  if (!imageUrl) {
+    return (
+      <div className="relative">
+        <div style={coverMaskStyle}>
+          <div className="flex h-120 w-full items-center justify-center bg-gradient-to-b from-muted/40 via-muted/15 to-transparent">
+            <span className="text-4xl text-foreground/30">封面暂未获取到</span>
+          </div>
+        </div>
+        {liveBadge}
+      </div>
+    )
+  }
   return (
     <div className="relative">
       <div style={coverMaskStyle}>
         <img className="object-cover w-full" src={imageUrl} alt="直播封面" />
       </div>
-      <div className="absolute right-20 top-20 pointer-events-none select-none">
-        <span className="text-7xl font-black tracking-[0.15em] uppercase text-white/20">直播中</span>
-      </div>
+      {liveBadge}
     </div>
   )
 }

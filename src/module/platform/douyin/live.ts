@@ -102,7 +102,10 @@ export const buildDouyinLivePayload = (options: {
 }) => {
   const { anchor, dynamicTYPE, liveItem, partitionTitle, webRid } = options
   return {
-    image_url: liveItem?.cover?.url_list?.[0] ?? '',
+    // 封面缺失（开播初期接口偶发不返回）时用主播头像兜底：模板的封面 <img>
+    // 没有固有高度，空 URL 会让整卡塌成一条遮罩带（实测 2026-09-20 崩铁前瞻
+    // 节目直播推送）。调用点已先重拉一次接口，头像只兜"重拉仍拿不到"的底。
+    image_url: liveItem?.cover?.url_list?.[0] || liveAvatarUrl(anchor),
     text: liveItem?.title ?? '',
     partition_title: partitionTitle || liveItem?.title || '未知分区',
     room_id: webRid,

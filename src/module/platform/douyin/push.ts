@@ -587,10 +587,32 @@ export class DouYinpush extends Base {
             if (pushItem.living && 'room_data' in pushItem.Detail_Data && Detail_Data.live_data) {
               const liveResponse = Detail_Data.live_data.data
               const livePayload = liveResponse?.data
-              const liveItem = Array.isArray(livePayload) ? livePayload[0] : livePayload?.data?.[0]
+              let liveItem = Array.isArray(livePayload) ? livePayload[0] : livePayload?.data?.[0]
+              const profile = Detail_Data.user_info.data.user
+              // 开播初期抖音偶发只返回标题不给封面（实测崩铁前瞻节目直播推送），等 2 秒重拉一次
+              if (!liveItem?.cover?.url_list?.[0]) {
+                try {
+                  await new Promise<void>(resolve => setTimeout(resolve, 2000))
+                  const retryData = await getDouyinData('直播间信息数据', {
+                    room_id: profile.room_id_str || '',
+                    web_rid: Detail_Data.room_data?.owner?.web_rid || '',
+                    typeMode: 'strict'
+                  }) as DouyinLiveInfo
+                  const retryPayload = retryData?.data?.data
+                  const retryItem = Array.isArray(retryPayload) ? retryPayload[0] : retryPayload?.data?.[0]
+                  if (retryItem?.cover?.url_list?.[0]) {
+                    liveItem = retryItem
+                    logger.info('[抖音推送] 直播封面缺失，已重拉直播间信息补上封面')
+                  } else {
+                    // 拿不到封面交给模板的占位块，卡片不再塌缩
+                    logger.warn('[抖音推送] 直播封面仍缺失，卡片将使用占位块渲染')
+                  }
+                } catch (error) {
+                  logger.warn(`[抖音推送] 直播封面缺失，重拉直播间信息失败: ${summarizeFailure(error)}`)
+                }
+              }
               const partitionTitle = liveResponse?.partition_road_map?.partition?.title ||
               (!Array.isArray(livePayload) ? livePayload?.partition_road_map?.partition?.title : undefined)
-              const profile = Detail_Data.user_info.data.user
               // 处理直播推送
               img = await Render('douyin/live', buildDouyinLivePayload({
                 anchor: profile,
