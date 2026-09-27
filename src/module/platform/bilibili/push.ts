@@ -18,6 +18,7 @@ import { buildLivePhotoMessages as buildCommonLivePhotoMessages, buildLivePhotoT
 import { buildPushListGroupInfo } from '@/module/platform/common/pushList'
 import { bilibiliDB, cleanOldDynamicCache } from '@/module/db/index'
 import { sendBilibiliCard, withTimeout } from './cardDelivery.js'
+import { bilibiliTimeoutFailures, resolveBilibiliTimeoutAction } from './timeoutPolicy.js'
 import { classifyMessageSendResult, isSendTimeoutError } from '@/module/utils/messageSend'
 import type { BilibiliFilterPushItem } from '@/module/db/bilibili'
 import common from '@/runtime/host/common'
@@ -216,7 +217,7 @@ type BilibiliPushEntry = Omit<BilibiliFilterPushItem, 'Dynamic_Data'> & {
 
 type WillBePushList = Record<string, BilibiliPushEntry>
 
-const BILIBILI_CARD_SEND_TIMEOUT = 30_000
+const BILIBILI_CARD_SEND_TIMEOUT = 55_000
 const BILIBILI_MEDIA_SEND_TIMEOUT = 180_000
 let activePushTask: Promise<boolean | void> | undefined
 let activePushStartedAt = 0
@@ -1127,12 +1128,47 @@ export class Bilibilipush extends Base {
                   }
                 }
               }
+              const cacheKey = `${dynamicId}:${groupId}`
               await bilibiliDB?.addDynamicCache(dynamicId, dynamicItem.host_mid, groupId, dynamicItem.dynamic_type)
               await bilibiliDB?.deleteDynamicPushProgress(dynamicId, dynamicItem.host_mid, groupId)
+              bilibiliTimeoutFailures.delete(cacheKey)
             }
           } catch (e) {
             if (isSendTimeoutError(e)) {
-              logger.warn(`[Bilibili Push] 动态${dynamicId}发送超时，保留已确认页进度，下一轮继续`)
+              const targetGroupId = target.groupId
+              const targetBotId = target.botId
+              const cacheKey = `${dynamicId}:${targetGroupId}`
+              // 连接还在（没被宿主因断线清理）说明只是回执慢，消息大概率已送达
+              const action = resolveBilibiliTimeoutAction(
+                Boolean(Bot?.[targetBotId]),
+                (bilibiliTimeoutFailures.get(cacheKey) || 0) + 1
+              )
+              if (action === 'treat-as-delivered') {
+                logger.warn(`[Bilibili Push] 动态${dynamicId}发送超时但连接在线，按已送达处理，不再重推`)
+                bilibiliTimeoutFailures.delete(cacheKey)
+                await bilibiliDB?.addDynamicCache(dynamicId, dynamicItem.host_mid, targetGroupId, dynamicItem.dynamic_type)
+                await bilibiliDB?.deleteDynamicPushProgress(dynamicId, dynamicItem.host_mid, targetGroupId)
+              } else if (action === 'breaker') {
+                const attempts = (bilibiliTimeoutFailures.get(cacheKey) || 0) + 1
+                bilibiliTimeoutFailures.delete(cacheKey)
+                logger.warn(`[Bilibili Push] 动态${dynamicId}连续${attempts}次发送超时且连接异常，停止重推`)
+                await bilibiliDB?.addDynamicCache(dynamicId, dynamicItem.host_mid, targetGroupId, dynamicItem.dynamic_type)
+                await bilibiliDB?.deleteDynamicPushProgress(dynamicId, dynamicItem.host_mid, targetGroupId)
+                const notice = [
+                  'B站动态推送连续发送失败，已停止重推避免刷屏',
+                  `UP主：${dynamicItem.remark || dynamicItem.host_mid}`,
+                  `动态：https://t.bilibili.com/${dynamicId}`,
+                  `目标群：${targetGroupId}（连续${attempts}次超时）`,
+                  '请检查 NapCat / OneBot 连接与机器人状态。'
+                ].join('\n')
+                Promise.resolve().then(() => Bot?.sendMasterMsg(notice)).catch(error => {
+                  logger.warn(`[Bilibili Push] 熔断告警发送失败: ${error instanceof Error ? error.message : String(error)}`)
+                })
+              } else {
+                const next = (bilibiliTimeoutFailures.get(cacheKey) || 0) + 1
+                bilibiliTimeoutFailures.set(cacheKey, next)
+                logger.warn(`[Bilibili Push] 动态${dynamicId}发送超时且连接已断开（第${next}次），保留已确认页进度，下一轮继续`)
+              }
             } else {
               logger.error(e)
             }
