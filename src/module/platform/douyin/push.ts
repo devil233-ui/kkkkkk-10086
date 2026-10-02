@@ -134,7 +134,7 @@ interface DouyinVideoMissRecord {
 const sendVideoMissedWarning = (records: DouyinVideoMissRecord[]): void => {
   const shown = records.slice(0, 5)
   const lines = shown.map(record =>
-    `· ${record.remark} 的作品 ${record.awemeId}（群${record.groupId}）：${record.reason}`
+    `· ${record.remark} 的作品 https://www.douyin.com/video/${record.awemeId}（群${record.groupId}）：${record.reason}`
   )
   if (records.length > shown.length) lines.push(`……等共 ${records.length} 条`)
   const message = [
@@ -536,11 +536,24 @@ export class DouYinpush extends Base {
       // 遍历每个动态数据
       for (const awemeId in data) {
         let itemAttempted = false
-        let itemFailed = false
-        let itemFailureReason = ''
-        const markItemFailure = (reason: unknown): void => {
-          itemFailed = true
-          if (!itemFailureReason) itemFailureReason = summarizeFailure(reason)
+        /**
+         * 群级发送结果：同一群内任一 bot 成功即视为该群已送达。
+         *
+         * 配置里常出现「一个群绑多个 bot」的写法（如
+         * `1053858006:1400606839,1053858006:3680634419`），只要其中一个 bot
+         * 把卡片发进群，群友就已经看到了；另一个 bot 不在线不该算这条作品
+         * 推送失败，否则会连续 3 轮误报「实际发送失败」给主人。
+         */
+        const groupOutcome = new Map<string, { ok: boolean, reason: string }>()
+        const markGroupFailure = (groupId: string, reason: unknown): void => {
+          // 该群已有成功记录就不再降级：内容已经到群了
+          if (groupOutcome.get(groupId)?.ok) return
+          if (!groupOutcome.has(groupId)) {
+            groupOutcome.set(groupId, { ok: false, reason: summarizeFailure(reason) })
+          }
+        }
+        const markGroupSuccess = (groupId: string): void => {
+          groupOutcome.set(groupId, { ok: true, reason: '' })
         }
 
         try {
@@ -684,7 +697,7 @@ export class DouYinpush extends Base {
           // Render 返回 false 或空数组表示本次渲染失败，保留未推送状态供下次重试。
           if (!skip && (!img || (Array.isArray(img) && img.length === 0))) {
             logger.warn(`[Douyin Push] 作品${actualAwemeId}渲染失败，不写入缓存，等待下一轮重试`)
-            markItemFailure('作品卡片渲染失败')
+            for (const target of pushItem.targets) markGroupFailure(target.groupId, '作品卡片渲染失败')
             continue
           }
 
@@ -703,7 +716,7 @@ export class DouYinpush extends Base {
 
             if (!group) {
               logger.warn(`bot${botId}不存在或群${groupId}不存在`)
-              if (!skip) markItemFailure(`目标群 ${groupId} 或机器人 ${botId} 不可用`)
+              if (!skip) markGroupFailure(groupId, `机器人${botId}不可用`)
               continue
             }
 
@@ -729,7 +742,7 @@ export class DouYinpush extends Base {
                   logger.warn(`[Douyin Push] 作品${actualAwemeId}卡片发送超时，大概率已送达，写入去重缓存后继续处理`)
                   cardAccepted = true
                 } else {
-                  markItemFailure(sendError)
+                  markGroupFailure(groupId, sendError)
                   throw sendError
                 }
               }
@@ -739,6 +752,8 @@ export class DouYinpush extends Base {
                 // 卡片提交后立即去重，避免附加媒体处理卡住导致下一轮重复发送主卡片。
                 await douyinDB?.addAwemeCache(actualAwemeId, pushItem.sec_uid, groupId, pushType)
               }
+              // 卡片已提交，该群视为送达（同群其他 bot 失败不再计为本条作品失败）
+              markGroupSuccess(groupId)
 
               // 如果是直播推送，更新直播状态
               if (pushItem.living && 'room_data' in pushItem.Detail_Data) {
@@ -881,19 +896,35 @@ export class DouYinpush extends Base {
               } else if (cardAccepted) {
                 logger.error(`[Douyin Push] 发送${actualAwemeId}的附加内容失败:`, error)
               } else {
-                markItemFailure(error)
+                markGroupFailure(groupId, error)
                 logger.error(`[Douyin Push] 发送${actualAwemeId}失败，未写入缓存:`, error)
               }
             }
           }
         } catch (error) {
-          if (itemAttempted) markItemFailure(error)
+          if (itemAttempted) {
+            // pushItem 声明在 try 里，catch 取不到，用原始 data 兜底
+            for (const target of data[awemeId]?.targets || []) markGroupFailure(target.groupId, error)
+          }
           logger.error(`[Douyin Push] 动态 ${awemeId} 处理失败，未写入缓存，等待下轮重试:`, error)
           continue
         } finally {
-          if (itemAttempted && itemFailed) {
-            summary.failed += 1
-            summary.reasons.push(`${data[awemeId]?.remark || '未知博主'}/${awemeId}: ${itemFailureReason || '发送失败'}`)
+          if (itemAttempted) {
+            // 只有「该群所有 bot 都没发出去」的群才算这条作品失败
+            const failedGroups = [...groupOutcome.entries()].filter(([, outcome]) => !outcome.ok)
+            if (failedGroups.length > 0) {
+              summary.failed += 1
+              const displayId = awemeId.replace(/^(post|favorite|recommend|live)_/, '')
+              const isLive = (data[awemeId]?.pushType || 'post') === 'live'
+              const link = isLive
+                ? `https://live.douyin.com/${data[awemeId]?.Detail_Data?.room_data?.owner?.web_rid || displayId}`
+                : `https://www.douyin.com/video/${displayId}`
+              const detail = failedGroups.slice(0, 3)
+                .map(([groupId, outcome]) => `群${groupId}（${outcome.reason}）`)
+                .join('；')
+              const more = failedGroups.length > 3 ? ` 等共${failedGroups.length}个群` : ''
+              summary.reasons.push(`${data[awemeId]?.remark || '未知博主'} 作品 ${link}：${detail}${more}`)
+            }
           }
         }
       }

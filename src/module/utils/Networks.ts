@@ -366,17 +366,30 @@ export class Networks {
       }
       if (probe?.total && probe.total >= MULTIPART_MIN_SIZE) {
         logger.debug(`启用多线程下载: ${Config.upload.downloadConcurrency || 4} 路, ${formatBytes(probe.total)}`)
-        return await downloadMultipart({
-          filepath,
-          request,
-          headers: this.headers,
-          total: probe.total,
-          validator: probe.validator,
-          concurrency: Config.upload.downloadConcurrency || 4,
-          maxRetries: this.maxRetries,
-          maxSpeed: throttle.enabled ? throttle.currentSpeed : 0,
-          onProgress: progressCallback
-        })
+        try {
+          return await downloadMultipart({
+            filepath,
+            request,
+            headers: this.headers,
+            total: probe.total,
+            validator: probe.validator,
+            concurrency: Config.upload.downloadConcurrency || 4,
+            maxRetries: this.maxRetries,
+            maxSpeed: throttle.enabled ? throttle.currentSpeed : 0,
+            onProgress: progressCallback
+          })
+        } catch (error: unknown) {
+          /**
+           * 多线程失败一律回退单线程，而不是让整次下载失败。
+           *
+           * 最常见的触发是分片校验器不一致：抖音等 CDN 的不同边缘节点会给同一个
+           * 文件返回不同的 ETag/Last-Modified，探测请求拿到 A 节点的值，分片请求
+           * 落到 B 节点就对不上，抛 MULTIPART_RESOURCE_CHANGED 后整个下载中断
+           * （实测 2026-10-02 视频下到 0.1% 就失败）。回退单线程仍会校验
+           * Content-Range 起始位置与总长度，不会拼出坏文件。
+           */
+          logger.warn(`多线程下载失败，回退单线程重试: ${getErrorMessage(error)}`)
+        }
       }
     }
 
