@@ -19,6 +19,8 @@ import { buildPushListGroupInfo } from '@/module/platform/common/pushList'
 import { bilibiliDB, cleanOldDynamicCache } from '@/module/db/index'
 import { sendBilibiliCard, withTimeout } from './cardDelivery.js'
 import { bilibiliTimeoutFailures, resolveBilibiliTimeoutAction } from './timeoutPolicy.js'
+import { buildBilibiliMissedMediaMessage, resolveBilibiliVideoOutcome } from './mediaOutcome.js'
+import type { BilibiliMissedMediaRecord } from './mediaOutcome.js'
 import { classifyMessageSendResult, isSendTimeoutError } from '@/module/utils/messageSend'
 import type { BilibiliFilterPushItem } from '@/module/db/bilibili'
 import common from '@/runtime/host/common'
@@ -221,6 +223,18 @@ const BILIBILI_CARD_SEND_TIMEOUT = 55_000
 const BILIBILI_MEDIA_SEND_TIMEOUT = 180_000
 let activePushTask: Promise<boolean | void> | undefined
 let activePushStartedAt = 0
+
+/**
+ * 卡片送达后的附加内容漏发汇总，轮末私聊主人一条。
+ *
+ * 与抖音同语义：卡片已经进群，附加内容（视频/图集/专栏）失败只汇总告警，
+ * 不重发卡片、也不把整条动态退回未推送状态。fire-and-forget，不阻塞推送。
+ */
+const sendBilibiliMissedMediaWarning = (records: BilibiliMissedMediaRecord[]): void => {
+  Promise.resolve().then(() => Bot?.sendMasterMsg(buildBilibiliMissedMediaMessage(records))).catch(error => {
+    logger.warn(`[Bilibili Push] 附加内容漏发告警给主人失败: ${error instanceof Error ? error.message : String(error)}`)
+  })
+}
 
 interface AmagiResponse<T> {
   data: T
@@ -507,6 +521,8 @@ export class Bilibilipush extends Base {
    * @returns {Promise<boolean>} - 返回处理结果，成功返回true，失败返回false
    */
   async getdata (data: WillBePushList): Promise<boolean> {
+    /** 本轮「卡片已送达、附加内容没跟上」的明细，轮末合并成一条私聊 */
+    const missedMedia: BilibiliMissedMediaRecord[] = []
     try {
       for (const dynamicId in data) {
         const dynamicItem = data[dynamicId]
@@ -1022,6 +1038,9 @@ export class Bilibilipush extends Base {
                         }
                       )
 
+                      /** 附加视频的发送结果，用于卡片送达后的漏发告警 */
+                      let videoGenerated = false
+                      let videoUploaded: boolean | undefined
                       if (mp4File.filepath && mp3File.filepath) {
                         await mergeFile('二合一（视频 + 音频）', {
                           path: mp4File.filepath,
@@ -1040,20 +1059,26 @@ export class Bilibilipush extends Base {
                               const fileSizeInMB = Number((stats.size / (1024 * 1024)).toFixed(2))
                               if (fileSizeInMB > (Config.upload?.groupfilevalue || 100)) {
                                 // 使用文件上传
-                                return await uploadFile(
+                                videoGenerated = true
+                                const uploaded = await uploadFile(
                                   this.e ?? {},
                                   { filepath: filePath, totalBytes: fileSizeInMB, originTitle: `${infoData.data.data.desc.substring(0, 50).replace(/[\\/:\\*\\?"<>\\|\r\n\s]/g, ' ')}` },
                                   '',
                                   { useGroupFile: true, active: true, activeOption: { group_id: groupId, uin: botId } }
                                 )
+                                videoUploaded = uploaded === true
+                                return uploaded
                               } else {
                                 /** 因为本地合成，没有视频直链 */
-                                return await uploadFile(
+                                videoGenerated = true
+                                const uploaded = await uploadFile(
                                   this.e ?? {},
                                   { filepath: filePath, totalBytes: fileSizeInMB },
                                   '',
                                   { active: true, activeOption: { group_id: groupId, uin: botId } }
                                 )
+                                videoUploaded = uploaded === true
+                                return uploaded
                               }
                             } else {
                               await Common.removeFile(mp4File.filepath, true)
@@ -1061,6 +1086,21 @@ export class Bilibilipush extends Base {
                               return true
                             }
                           }
+                        })
+                      }
+                      const videoOutcome = resolveBilibiliVideoOutcome(videoGenerated, videoUploaded)
+                      if (videoOutcome.outcome === 'retry') {
+                        // 下载/合成失败：抛回外层只记错误，页级进度保留 → 下一轮只重试附加内容，不会重发卡片
+                        throw new Error(`动态${dynamicId}的附加视频未生成：${videoOutcome.reason}`)
+                      }
+                      if (videoOutcome.outcome === 'missed') {
+                        logger.warn(`[Bilibili Push] 动态${dynamicId}的附加视频未发出（卡片已送达）：${videoOutcome.reason}`)
+                        missedMedia.push({
+                          dynamicId,
+                          dynamicType: dynamicItem.dynamic_type,
+                          remark: dynamicItem.remark,
+                          groupId,
+                          reason: videoOutcome.reason
                         })
                       }
                     }
@@ -1182,6 +1222,8 @@ export class Bilibilipush extends Base {
       return false
     } finally {
       this.pushContext = undefined
+      // 卡片已送达、附加内容没跟上的明细，轮末合并成一条私聊
+      if (missedMedia.length > 0) sendBilibiliMissedMediaWarning(missedMedia)
     }
     return true
   }
