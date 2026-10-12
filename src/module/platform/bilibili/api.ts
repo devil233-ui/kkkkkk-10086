@@ -1,11 +1,11 @@
 import { createRequire } from 'node:module'
-import type { BilibiliMethodToFetcher as BilibiliMethodToFetcherType } from '@ikenxuan/amagi'
 import Config from '@/module/utils/Config'
+import { BilibiliMethodToFetcher } from '@/module/platform/common/amagiMethodMap'
 import { buildUserAgentHeader } from '@/module/platform/common/userAgent'
 import { DEFAULT_REQUEST_TIMEOUT_MS, runWithRequestGuard } from '@/module/utils/RequestGuard'
 
 /** 旧版 amagi v5 使用的中文方法名 */
-export type BilibiliMethodName = keyof typeof BilibiliMethodToFetcherType
+export type BilibiliMethodName = keyof typeof BilibiliMethodToFetcher
 
 /** amagi fetcher 方法，参数在 wrapper 边界收窄 */
 type BilibiliFetcherMethod = (
@@ -37,9 +37,7 @@ export interface BilibiliApiDependencies {
 }
 
 interface AmagiBilibiliModule {
-  BilibiliMethodToFetcher: Record<string, string | undefined>
   bilibiliFetcher: Record<string, BilibiliFetcherMethod | undefined>
-  getEnglishMethodName: (platform: string, method: string) => string | undefined
 }
 
 const require = createRequire(import.meta.url)
@@ -48,10 +46,12 @@ let defaultDependencies: BilibiliApiDependencies | undefined
 /** amagi 的 package exports 在 Vite 下解析失败，沿用 Base.ts 的 CommonJS 兜底 */
 const getDefaultDependencies = (): BilibiliApiDependencies => {
   if (!defaultDependencies) {
+    // amagi 7.0 删除了 BilibiliMethodToFetcher 与 getEnglishMethodName：
+    // 映射表改用内联副本；英文名解析用「表值直查 + fetcher 同名兜底」等价实现。
     const amagi = require('@ikenxuan/amagi') as AmagiBilibiliModule
     defaultDependencies = {
-      getEnglishMethodName: amagi.getEnglishMethodName,
-      methodMap: amagi.BilibiliMethodToFetcher,
+      getEnglishMethodName: (_platform, method) => BilibiliMethodToFetcher[method],
+      methodMap: BilibiliMethodToFetcher,
       fetcher: amagi.bilibiliFetcher
     }
   }
@@ -105,14 +105,16 @@ export const getBilibiliData = async (
   arg2?: Record<string, unknown>,
   dependencies: BilibiliApiDependencies = getDefaultDependencies()
 ): Promise<unknown> => {
-  const fetcherMethod = dependencies.getEnglishMethodName('bilibili', method) || dependencies.methodMap[method]
+  const fetcherMethod = dependencies.getEnglishMethodName('bilibili', method) ??
+    dependencies.methodMap[method] ??
+    (typeof dependencies.fetcher[method] === 'function' ? method : undefined)
   const fetcher = fetcherMethod ? dependencies.fetcher[fetcherMethod] : undefined
   if (!fetcherMethod || typeof fetcher !== 'function') {
     throw new Error(`Unsupported Bilibili API method: ${method}`)
   }
 
   const { cookie, options } = normalizeArgs(arg1, arg2)
-  return await runWithRequestGuard(
+  const result = await runWithRequestGuard(
     async signal => await fetcher(options, cookie, {
       ...buildRequestConfig(),
       signal
@@ -122,4 +124,12 @@ export const getBilibiliData = async (
       maxRetries: Config.request?.amagiMaxRetries
     }
   )
+  // amagi 7.0 成功响应是 {success:true,...} 且无 code 字段，补回 6.x 的 code:200 语义
+  if (isPlainRecord(result) && result.code === undefined && result.success === true) {
+    return { ...result, code: 200, message: typeof result.message === 'string' ? result.message : '获取成功' }
+  }
+  return result
 }
+
+const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null

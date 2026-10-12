@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module'
-import type { DouyinMethodToFetcher as DouyinMethodToFetcherType } from '@ikenxuan/amagi'
 import Config from '@/module/utils/Config'
+import { DouyinMethodToFetcher } from '@/module/platform/common/amagiMethodMap'
 import { buildUserAgentHeader } from '@/module/platform/common/userAgent'
 import { DEFAULT_REQUEST_TIMEOUT_MS, runWithRequestGuard } from '@/module/utils/RequestGuard'
 import {
@@ -10,7 +10,7 @@ import {
 } from './apiDiagnostics.js'
 
 /** 旧版 amagi v5 使用的中文方法名 */
-export type DouyinMethodName = keyof typeof DouyinMethodToFetcherType
+export type DouyinMethodName = keyof typeof DouyinMethodToFetcher
 
 /** amagi fetcher 方法，参数在 wrapper 边界收窄 */
 type DouyinFetcherMethod = (
@@ -44,7 +44,6 @@ interface AmagiEvents {
 }
 
 interface AmagiDouyinModule {
-  DouyinMethodToFetcher: Record<string, string | undefined>
   douyinFetcher: Record<string, DouyinFetcherMethod | undefined>
   amagiEvents?: AmagiEvents
 }
@@ -55,9 +54,10 @@ let defaultDependencies: DouyinApiDependencies | undefined
 /** amagi 的 package exports 在 Vite 下解析失败，沿用 Base.ts 的 CommonJS 兜底 */
 const getDefaultDependencies = (): DouyinApiDependencies => {
   if (!defaultDependencies) {
+    // amagi 7.0 删除了 DouyinMethodToFetcher 导出：映射表改用内联副本（common/amagiMethodMap）
     const amagi = require('@ikenxuan/amagi') as AmagiDouyinModule
     defaultDependencies = {
-      methodMap: amagi.DouyinMethodToFetcher,
+      methodMap: DouyinMethodToFetcher,
       fetcher: amagi.douyinFetcher,
       events: amagi.amagiEvents
     }
@@ -70,6 +70,20 @@ let subscribedEvents: AmagiEvents | undefined
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null
+
+/**
+ * 把 amagi 7.0 的响应包归一化成 6.x 形态。
+ *
+ * 7.0 成功时返回 `{ success: true, data, ... }` 且**没有 `code` 字段**（实测
+ * `code === undefined`），而插件全链路按 `code === 200` 判成功；失败时 7.0 仍带
+ * `{ success: false, error: {...} }`。这里在 wrapper 边界统一补回 6.x 语义：
+ * `success === true` ⇒ `code: 200`，其余原样透传，下游零改动。
+ */
+const normalizeLegacyResponse = (result: unknown): unknown => {
+  if (!isRecord(result) || result.code !== undefined) return result
+  if (result.success !== true) return result
+  return { ...result, code: 200, message: typeof result.message === 'string' ? result.message : '获取成功' }
+}
 
 const toDiagnostic = (value: unknown): DouyinApiDiagnostic | undefined => {
   if (!isRecord(value) || value.platform !== 'douyin' || typeof value.methodType !== 'string') return undefined
@@ -192,12 +206,13 @@ export const getDouyinData = async (
     )
     const completedAt = Date.now()
     const diagnostic = findRecentApiError(startedAt, completedAt, fetcherMethod)
-    const resultCode = isRecord(result) ? result.code : undefined
+    const normalized = normalizeLegacyResponse(result)
+    const resultCode = isRecord(normalized) ? normalized.code : undefined
     if (resultCode !== 200) {
       getLogger()?.warn?.(formatDouyinApiDiagnostic(method, options, resultCode, diagnostic))
-      return diagnostic ? attachDouyinApiDiagnostic(result, diagnostic) : result
+      return diagnostic ? attachDouyinApiDiagnostic(normalized, diagnostic) : normalized
     }
-    return result
+    return normalized
   } catch (error) {
     const completedAt = Date.now()
     const diagnostic = findRecentApiError(startedAt, completedAt, fetcherMethod)

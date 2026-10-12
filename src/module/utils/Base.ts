@@ -2,6 +2,7 @@ import { createRequire } from 'node:module'
 import type { AxiosRequestConfig } from 'axios'
 import type { ProxyAuth, PushlistConfig } from '@/types/config'
 import type { FileInfo, FileTitle } from '@/types/platform'
+import { bilibiliErrorCodeMap } from '@/module/platform/common/amagiMethodMap'
 import { getBilibiliData as fetchBilibiliData } from '@/module/platform/bilibili/api'
 import { getDouyinData as fetchDouyinData } from '@/module/platform/douyin/api'
 import { Networks, baseHeaders } from './Networks.js'
@@ -25,7 +26,6 @@ interface AmagiClient {
 
 interface AmagiModule {
   default: (options: unknown) => AmagiClient
-  bilibiliErrorCodeMap: Record<number, unknown>
 }
 
 interface AmagiDependencies extends AmagiModule {
@@ -44,10 +44,9 @@ const getDefaultAmagiModule = (): AmagiModule => {
 const getAmagiDependencies = (
   overrides: Partial<AmagiDependencies>
 ): AmagiDependencies => {
-  if (overrides.default && overrides.bilibiliErrorCodeMap) {
+  if (overrides.default) {
     return {
       default: overrides.default,
-      bilibiliErrorCodeMap: overrides.bilibiliErrorCodeMap,
       getBilibiliData: overrides.getBilibiliData ?? fetchBilibiliData,
       getDouyinData: overrides.getDouyinData ?? fetchDouyinData
     }
@@ -380,7 +379,6 @@ export class Base {
     const dependencies = getAmagiDependencies(overrides)
     const {
       default: Client,
-      bilibiliErrorCodeMap,
       getBilibiliData,
       getDouyinData
     } = dependencies

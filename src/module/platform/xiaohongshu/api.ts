@@ -1,11 +1,11 @@
 import { createRequire } from 'node:module'
-import type { XiaohongshuMethodToFetcher as XiaohongshuMethodToFetcherType } from '@ikenxuan/amagi'
 import Config from '@/module/utils/Config'
+import { XiaohongshuMethodToFetcher } from '@/module/platform/common/amagiMethodMap'
 import { buildUserAgentHeader } from '@/module/platform/common/userAgent'
 import { DEFAULT_REQUEST_TIMEOUT_MS, runWithRequestGuard } from '@/module/utils/RequestGuard'
 
 /** 旧版 amagi v5 使用的中文方法名 */
-export type XiaohongshuMethodName = keyof typeof XiaohongshuMethodToFetcherType
+export type XiaohongshuMethodName = keyof typeof XiaohongshuMethodToFetcher
 
 /** amagi fetcher 方法，参数在 wrapper 边界收窄 */
 type XiaohongshuFetcherMethod = (
@@ -34,7 +34,6 @@ export interface XiaohongshuApiDependencies {
 }
 
 interface AmagiXiaohongshuModule {
-  XiaohongshuMethodToFetcher: Record<string, string | undefined>
   xiaohongshuFetcher: Record<string, XiaohongshuFetcherMethod | undefined>
 }
 
@@ -44,9 +43,10 @@ let defaultDependencies: XiaohongshuApiDependencies | undefined
 /** amagi 的 package exports 在 Vite 下解析失败，沿用现有平台 wrapper 的 CommonJS 兜底 */
 const getDefaultDependencies = (): XiaohongshuApiDependencies => {
   if (!defaultDependencies) {
+    // amagi 7.0 删除了 XiaohongshuMethodToFetcher 导出：映射表改用内联副本
     const amagi = require('@ikenxuan/amagi') as AmagiXiaohongshuModule
     defaultDependencies = {
-      methodMap: amagi.XiaohongshuMethodToFetcher,
+      methodMap: XiaohongshuMethodToFetcher,
       fetcher: amagi.xiaohongshuFetcher
     }
   }
@@ -102,7 +102,7 @@ export const getXiaohongshuData = async (
   }
 
   const { cookie, options } = normalizeArgs(arg1, arg2)
-  return await runWithRequestGuard(
+  const result = await runWithRequestGuard(
     async signal => await fetcher(options, cookie, {
       ...buildRequestConfig(),
       signal
@@ -112,4 +112,12 @@ export const getXiaohongshuData = async (
       maxRetries: Config.request?.amagiMaxRetries
     }
   )
+  // amagi 7.0 成功响应是 {success:true,...} 且无 code 字段，补回 6.x 的 code:200 语义
+  if (isPlainRecord(result) && result.code === undefined && result.success === true) {
+    return { ...result, code: 200, message: typeof result.message === 'string' ? result.message : '获取成功' }
+  }
+  return result
 }
+
+const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null
