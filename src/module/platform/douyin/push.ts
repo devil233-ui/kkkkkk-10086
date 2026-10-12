@@ -17,6 +17,8 @@ import { classifyMessageSendResult, isSendTimeoutError } from '@/module/utils/me
 import common from '@/runtime/host/common'
 import {
   DouyinPushFailureTracker,
+  DouyinFetchFailureTracker,
+  type DouyinFetchFailureDecision,
   type DouyinPushRunSummary
 } from './pushFailure.js'
 
@@ -78,6 +80,8 @@ const DOUYIN_MEDIA_SEND_TIMEOUT = 180_000
 let activePushTask: Promise<boolean | void> | undefined
 let activePushStartedAt = 0
 const scheduledPushFailureTracker = new DouyinPushFailureTracker()
+/** 取数（订阅数据获取）连续失败计数，与发送失败分开统计，见 DouyinFetchFailureTracker */
+const scheduledFetchFailureTracker = new DouyinFetchFailureTracker()
 
 const emptyPushRunSummary = (): DouyinPushRunSummary => ({ attempted: 0, failed: 0, reasons: [] })
 
@@ -113,6 +117,26 @@ const sendScheduledPushFailureWarning = (summary: DouyinPushRunSummary, consecut
 
   Promise.resolve().then(() => Bot?.sendMasterMsg(message)).catch(error => {
     logger.warn(`[抖音推送] 发送失败告警给主人失败: ${summarizeFailure(error)}`)
+  })
+}
+
+/**
+ * 整轮订阅取数失败的私聊告警。
+ *
+ * 与发送失败告警互补：取数阶段全军覆没时没有任何作品进入发送阶段，
+ * 发送通道永远不会触发。这里在连续 N 轮全部订阅都取不到数据时提醒一次，
+ * 恢复后自动静默（tracker 见 DouyinFetchFailureTracker）。
+ */
+const sendScheduledFetchFailureWarning = (decision: DouyinFetchFailureDecision): void => {
+  const message = [
+    `抖音推送连续 ${decision.consecutiveFailures} 轮无法获取订阅数据`,
+    `本轮失败订阅：${decision.failed} 个（无一成功）`,
+    `最近错误：${decision.reason || '未知错误'}`,
+    '常见原因是抖音接口风控或签名失效（ck 未必过期）；恢复后本轮告警自动停止。'
+  ].join('\n')
+
+  Promise.resolve().then(() => Bot?.sendMasterMsg(message)).catch(error => {
+    logger.warn(`[抖音推送] 取数失败告警给主人失败: ${summarizeFailure(error)}`)
   })
 }
 
@@ -363,6 +387,9 @@ export class DouYinpush extends Base {
   /** 是否强制推送（忽略已推送记录） */
   force = false
 
+  /** 本轮订阅取数结果：成功数、失败数与最近一次失败原因 */
+  private fetchOutcome: { succeeded: number, failed: number, reason?: string } = { succeeded: 0, failed: 0 }
+
   /**
    * 构造函数
    * @param e 事件对象，定时任务触发时没有事件
@@ -423,6 +450,8 @@ export class DouYinpush extends Base {
       }
 
       const data = await this.getDynamicList(Config.pushlist.douyin || [])
+      // 取数结果先记账：即使本轮没有可推作品，整轮取不到数据也要能告警。
+      this.recordScheduledFetchResult()
 
       if (Object.keys(data).length === 0) {
         this.recordScheduledPushResult(emptyPushRunSummary())
@@ -445,6 +474,21 @@ export class DouYinpush extends Base {
     const decision = scheduledPushFailureTracker.record(summary)
     if (decision.shouldNotify) {
       sendScheduledPushFailureWarning(decision, decision.consecutiveFailures)
+    }
+  }
+
+  /**
+   * 只对定时任务记录「整轮取数失败」，补上发送通道覆盖不到的那半段。
+   *
+   * 背景：2026-10 抖音 Argus 风控期间全部订阅在取数阶段就失败，没有任何作品
+   * 进入发送阶段，`attempted` 恒为 0，发送失败告警永远不会触发，主人整整一周
+   * 收不到任何私聊。这里按轮记录取数结果，连续 N 轮无一成功才提醒一次。
+   */
+  private recordScheduledFetchResult (): void {
+    if (this.e) return
+    const decision = scheduledFetchFailureTracker.record(this.fetchOutcome)
+    if (decision.shouldNotify) {
+      sendScheduledFetchFailureWarning(decision)
     }
   }
 
@@ -945,6 +989,8 @@ export class DouYinpush extends Base {
    */
   async getDynamicList (userList: DouyinPushConfigItem[]): Promise<WillBePushList> {
     const willbepushlist: WillBePushList = {} // 初始化将要推送的列表对象
+    // 每轮重置取数计数：runAction 在本方法返回后读取它决定是否告警
+    this.fetchOutcome = { succeeded: 0, failed: 0 }
 
     try {
       /** 过滤掉不启用的订阅项 */
@@ -962,6 +1008,8 @@ export class DouYinpush extends Base {
           // 定时任务没有事件对象，接口错误卡片需要从当前订阅取得目标群和机器人。
           this.pushContext = { groupWithBot: item.group_id }
           const userinfo = await this.amagi.getDouyinData('用户主页数据', { sec_uid, typeMode: 'strict' }) as DouyinProfileResponse
+          // 取到主页数据即视为该订阅本轮可用；只要有一个成功就不告警。
+          this.fetchOutcome.succeeded += 1
 
           const targets = item.group_id.map(groupWithBot => {
             const [groupId = '', botId = ''] = groupWithBot.split(':')
@@ -1005,6 +1053,8 @@ export class DouYinpush extends Base {
           // 单个博主失败不再中断整轮推送，理由同 bilibili/push.ts 里那处：
           // Base.ts 的 amagi 代理在接口返回非零 code 时会 throw，try 原来在循环外面，
           // 第一个接口失败的博主就会把 for 整个终止，后面所有订阅当轮都不推。
+          this.fetchOutcome.failed += 1
+          this.fetchOutcome.reason = summarizeFailure(error)
           logger.warn(
             `[抖音推送] 用户 ${item.remark || item.short_id || item.sec_uid || '未知'}本轮跳过：${error instanceof Error ? error.message : String(error)}`
           )
