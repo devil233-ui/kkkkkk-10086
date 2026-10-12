@@ -1,6 +1,7 @@
 import type { Browser, HTTPResponse, Page } from 'puppeteer'
 import { Config } from '@/module/utils/index'
 import { QRCodeScanner } from '@/module/utils/QRCodeScanner.js'
+import { resolveHostBrowserInit } from '@/runtime/host/renderer-browser'
 import { scan } from '@ikenxuan/qrcode'
 
 /** 登录流程使用的事件对象。浏览器由云崽运行时提供，不在插件内自行启动。 */
@@ -318,7 +319,9 @@ const runDouyinLogin = async (
   let page: Page | undefined
 
   try {
-    const browserInit = event.runtime?.puppeteer?.browserInit
+    // 优先用事件自带的 runtime.puppeteer；TRSS 的兼容垫片在「自动选择」下没有
+    // browserInit，此时兜底直取 renderers/puppeteer 渲染器实例（共享同一浏览器）。
+    const browserInit = await resolveHostBrowserInit(event.runtime)
     if (!browserInit) throw new Error('无法取得云崽 Puppeteer 渲染器')
     const browser = await browserInit()
     if (!browser) throw new Error('云崽 Puppeteer 浏览器启动失败')

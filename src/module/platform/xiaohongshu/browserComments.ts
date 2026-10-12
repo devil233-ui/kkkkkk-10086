@@ -1,5 +1,7 @@
 import type { Browser, CookieParam, HTTPResponse, Page } from 'puppeteer'
 
+import { resolveHostBrowserInit } from '@/runtime/host/renderer-browser'
+
 const COMMENT_API_PATH = '/api/sns/web/v2/comment/page'
 const PAGE_TIMEOUT = 60 * 1000
 const COMMENT_TIMEOUT = 30 * 1000
@@ -64,9 +66,11 @@ export const fetchXiaohongshuCommentsWithBrowser = async ({
   noteId: string
   xsecToken?: string
 }): Promise<unknown[]> => {
-  if (!renderer?.browserInit) throw new Error('无法取得云崽 Puppeteer 渲染器')
+  // 优先用调用方传入的 runtime.puppeteer；TRSS 兜底直取 renderers/puppeteer 实例
+  const browserInit = renderer?.browserInit ?? await resolveHostBrowserInit()
+  if (!browserInit) throw new Error('无法取得云崽 Puppeteer 渲染器')
 
-  const browser = await renderer.browserInit()
+  const browser = await browserInit()
   if (!browser) throw new Error('云崽 Puppeteer 浏览器启动失败')
 
   let page: Page | undefined
