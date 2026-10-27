@@ -36,6 +36,7 @@ export class StatisticsDBBase {
       await fs.promises.mkdir(path.dirname(this.dbPath), { recursive: true })
       this.db = new sqlite3.Database(this.dbPath)
       await this.createTables()
+      await this.migrateParseHistoryColumns()
       await this.initGlobalStatistics()
       await this.syncHistoryFromStats()
       logger.debug(logger.green('--------------------------[StatisticsDB] 初始化数据库完成--------------------------'))
@@ -78,6 +79,27 @@ export class StatisticsDBBase {
     for (const query of queries) {
       await this.runQuery(query)
     }
+  }
+
+  /**
+   * 给老库的 ParseHistory 补齐后来新增的平台列。
+   *
+   * `CREATE TABLE IF NOT EXISTS` 对已存在的表什么都不做，所以升级前建的库
+   * 不会自动获得新平台列，写入时会一直报
+   * `table ParseHistory has no column named <平台>`。
+   * 这里按 PRAGMA 的实际列名补齐：缺哪列加哪列，新库跑一遍是空操作，可重复执行。
+   * @returns 本次实际补上的列名
+   */
+  async migrateParseHistoryColumns (): Promise<string[]> {
+    const columns = await this.allQuery<{ name?: string }>('PRAGMA table_info(ParseHistory)')
+    const existing = new Set(columns.map(column => String(column.name ?? '')))
+    const missing = PLATFORMS.filter(platform => !existing.has(platform))
+    for (const platform of missing) {
+      // 列名来自上面的 PLATFORMS 常量，不拼接外部输入
+      await this.runQuery(`ALTER TABLE ParseHistory ADD COLUMN ${platform} INTEGER DEFAULT 0`)
+      logger.info(`[StatisticsDB] ParseHistory 补齐缺失列: ${platform}`)
+    }
+    return missing
   }
 
   async initGlobalStatistics (): Promise<void> {
