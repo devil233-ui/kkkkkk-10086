@@ -66,7 +66,7 @@ const PLATFORM_CONFIG: PlatformConfig[] = [
     enabled: getConfigValue(Config.douyin?.switch, Config.douyin?.douyintool)
   },
   {
-    reg: /(bilibili.com|b23.tv|t.bilibili.com|bili2233.cn|^BV[1-9a-zA-Z]{10}$|^av\d+$)/i,
+    reg: /(bilibili.com|b23.tv|t.bilibili.com|bili2233.cn|\bBV[1-9a-zA-Z]{10}\b|\bav\d+\b)/i,
     handler: 'bilibili',
     enabled: getConfigValue(Config.bilibili?.switch, Config.bilibili?.bilibilitool)
   },
