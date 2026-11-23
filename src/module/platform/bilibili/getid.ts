@@ -79,6 +79,16 @@ export const getBilibiliID = async (
   let result: BilibiliIdData = { type: 'undefined' }
   let longLink = ''
   try {
+    // 「文字 + BV 号」是群里最常见的分享形态（如「测试 BV1jfy5zNEb5」）。
+    // 这类输入里没有 URL，若原样交给 getLongLink/fetch，整串中文会被当成
+    // URL 请求并抛 `TypeError: Failed to parse URL from 测试BV1jfy5zNEb5`。
+    // 这里先把作品号抠出来还原成正规视频链接；已带链接的输入保持原样，
+    // 避免覆盖短链重定向那套解析。
+    if (!/https?:\/\/[^\s]+/i.test(url)) {
+      const workId = url.match(/\b(BV[1-9a-zA-Z]{10}|av\d+)\b/i)?.[1]
+      if (workId) url = `https://www.bilibili.com/video/${workId}`
+    }
+
     // 获取长链接
     longLink = await new Networks({
       url,
