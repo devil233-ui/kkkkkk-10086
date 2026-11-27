@@ -135,8 +135,13 @@ export const getBilibiliID = async (
         (url) => /festival\/([A-Za-z0-9]+)/.test(url),
         (url) => {
           const festivalMatch = /festival\/([A-Za-z0-9]+)\?bvid=([A-Za-z0-9]+)/.exec(url)
+          // 活动视频会被重定向到 festival 页，bvid 只存在于查询串里。
+          // 之前这里只回填了 id，上层按 iddata.bvid 取数，于是带着 undefined 去请求，
+          // B站直接回 -1「应用程序不存在或已被封禁」。id 保留给旧调用点。
+          const festivalBvid = festivalMatch?.[2] ?? url.match(/\b(BV[1-9a-zA-Z]{10})\b/i)?.[1]
           return {
             type: 'one_video',
+            bvid: festivalBvid,
             id: festivalMatch ? festivalMatch[2] : undefined
           }
         }
