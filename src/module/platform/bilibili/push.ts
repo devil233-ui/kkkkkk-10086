@@ -21,6 +21,8 @@ import { sendBilibiliCard, withTimeout } from './cardDelivery.js'
 import { bilibiliTimeoutFailures, resolveBilibiliTimeoutAction } from './timeoutPolicy.js'
 import { buildBilibiliMissedMediaMessage, resolveBilibiliVideoOutcome } from './mediaOutcome.js'
 import type { BilibiliMissedMediaRecord } from './mediaOutcome.js'
+import { BilibiliFetchFailureTracker } from './fetchFailure.js'
+import type { BilibiliFetchFailureDecision, BilibiliFetchOutcome } from './fetchFailure.js'
 import { classifyMessageSendResult, isSendTimeoutError } from '@/module/utils/messageSend'
 import type { BilibiliFilterPushItem } from '@/module/db/bilibili'
 import common from '@/runtime/host/common'
@@ -397,6 +399,21 @@ const throttleBilibiliRequest = async (): Promise<void> => {
   lastBilibiliRequestAt = Date.now()
 }
 
+/** 定时推送专用的取数失败计数：整轮 UP 都取不到数据时累计，恢复即重置。 */
+const scheduledFetchFailureTracker = new BilibiliFetchFailureTracker()
+
+/**
+ * 整轮取数失败时私聊主人。与「实际发送失败」那条告警互补：
+ * 取数全军覆没时没有任何作品进入发送阶段，那条通道不会响。
+ */
+const sendScheduledFetchFailureWarning = (decision: BilibiliFetchFailureDecision): void => {
+  const reason = decision.reason ? `\n失败原因：${decision.reason}` : ''
+  const message = `B站推送连续 ${decision.consecutiveFailures} 轮没取到任何订阅数据（本轮失败 ${decision.failed} 个）${reason}\n请检查 B站 cookie、出口 IP 是否被风控，或看日志里的方法名。`
+  Promise.resolve().then(() => Bot?.sendMasterMsg(message)).catch(error => {
+    logger.error(`[Bilibili 推送] 取数失败私聊告警发送失败: ${String(error)}`)
+  })
+}
+
 const DEFAULT_BILIBILI_PUSH_TYPES = ['video', 'draw', 'word', 'live', 'forward', 'article'] as const
 type BilibiliPushType = typeof DEFAULT_BILIBILI_PUSH_TYPES[number]
 
@@ -425,6 +442,8 @@ export const normalizeBilibiliPushTypes = (pushTypes: unknown): BilibiliPushType
 export class Bilibilipush extends Base {
   declare e: BilibiliPushEvent | undefined
   force = false
+  /** 本轮取数统计：一轮开始时清零，逐个 UP 累加，轮末交给 tracker 判定。 */
+  private fetchOutcome: BilibiliFetchOutcome = { succeeded: 0, failed: 0 }
   /**
    * 构造函数
    * @param {*} [e] - 事件对象，定时任务触发时没有事件
@@ -1346,6 +1365,7 @@ export class Bilibilipush extends Base {
 
   async getDynamicList (userList: BilibiliPushConfigItem[]): Promise<{ willbepushlist: WillBePushList }> {    const directLiveItems = await this.getDirectLivePushItems(userList)
     /** @type {WillBePushList} */
+    this.fetchOutcome = { succeeded: 0, failed: 0 }
     const willbepushlist: WillBePushList = { ...directLiveItems.willBePushList }
 
     try {
@@ -1363,9 +1383,14 @@ export class Bilibilipush extends Base {
           this.pushContext = { groupWithBot: item.group_id }
           await throttleBilibiliRequest()
           const dynamic_list = asAmagiResponse<BiliUserDynamic>(await this.amagi.getBilibiliData('用户主页动态列表数据', { host_mid: item.host_mid, typeMode: 'strict' }))
-          if (dynamic_list.data.data.items.length > 0) {
+          // 结构与内容都拿到才算这个 UP 本轮取数成功；结构缺失按失败处理，
+          // 否则 TypeError 会把真正的原因（风控/接口变更）盖掉。
+          const dynamicListItems = dynamic_list?.data?.data?.items
+          if (!Array.isArray(dynamicListItems)) throw new Error('动态列表返回结构异常（缺少 data.data.items）')
+          this.fetchOutcome.succeeded += 1
+          if (dynamicListItems.length > 0) {
             // 遍历接口返回的视频列表
-            for (const dynamic of dynamic_list.data.data.items) {
+            for (const dynamic of dynamicListItems) {
               const now = Date.now()
               // 获取动态发布时间戳(毫秒)
               const createTime = dynamic.modules.module_author.pub_ts * 1000
@@ -1440,6 +1465,8 @@ export class Bilibilipush extends Base {
           logger.warn(
             `[Bilibili 推送] UP主 ${item.remark}（${item.host_mid}）本轮跳过：${error instanceof Error ? error.message : String(error)}`
           )
+          this.fetchOutcome.failed += 1
+          this.fetchOutcome.reason = error instanceof Error ? error.message : String(error)
           continue
         } finally {
           this.pushContext = undefined
@@ -1448,7 +1475,19 @@ export class Bilibilipush extends Base {
     } catch (error) {
       logger.error(error)
     }
+    await this.recordScheduledFetchResult()
     return { willbepushlist }
+  }
+
+  /**
+   * 轮末把本轮取数统计交给 tracker，只有定时推送才告警（交互式解析有自己的错误回复）。
+   * 语义与抖音侧 DouyinFetchFailureTracker 一致：整轮没一个 UP 取到数据才累计。
+   */
+  private async recordScheduledFetchResult (): Promise<void> {
+    if (this.e) return
+    const decision = scheduledFetchFailureTracker.record(this.fetchOutcome)
+    if (!decision.shouldNotify) return
+    sendScheduledFetchFailureWarning(decision)
   }
 
   /**

@@ -195,6 +195,12 @@ export const getBilibiliData = async (
       message: mapped ? `${mapped}（${code}）` : (detail || `B站接口返回失败（${code}）`)
     }
   }
+  // 极少数情况 amagi 会把内部错误吞掉、直接返回 undefined。原样往上返，调用方会在
+  // `xxx.data` 上抛 TypeError，把真正原因盖住（线上表现为「动态列表数量为零」+ 每条订阅
+  // 一行 TypeError）。这里归一成失败响应，让上层拿到可读原因并计入取数失败统计。
+  if (!isPlainRecord(result)) {
+    return { code: 500, message: 'B站接口未返回数据（可能被风控或参数不符）' }
+  }
   return result
 }
 
