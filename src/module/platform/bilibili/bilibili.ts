@@ -441,6 +441,22 @@ const isPcdnUrl = (url: string): boolean => {
 }
 
 /**
+ * 实测会直接回 567（CDN 拒绝）的节点。
+ *
+ * `upos-sz-mirrorcosov.bilivideo.com` 在同一份播放数据里和 `akamaized` 主节点并存，
+ * 但下载必回 567；它不是 PCDN（域名解析正常），所以原来的过滤拦不住。
+ */
+const BILIBILI_BAD_CDN_HOST = /^upos-[a-z]+-mirrorcosov\.bilivideo\.com$/i
+
+const isBadCdnUrl = (url: string): boolean => {
+  try {
+    return BILIBILI_BAD_CDN_HOST.test(new URL(url).hostname)
+  } catch {
+    return false
+  }
+}
+
+/**
  * 挑一个能用的流地址：优先非 PCDN。
  *
  * 接口同时给 `base_url` 和 `backup_url[]`，本仓库（以及上游）一直只用 `base_url`，
@@ -454,8 +470,14 @@ export const pickBilibiliStreamUrl = (stream: BilibiliStreamUrls | undefined): s
   const candidates = [stream?.base_url, ...(stream?.backup_url ?? [])]
     .filter((url): url is string => typeof url === 'string' && url.length > 0)
   if (candidates.length === 0) return ''
-  const direct = candidates.find(url => !isPcdnUrl(url))
-  if (direct) return direct
+  // 先排除 PCDN 和实测回 567 的镜像节点；都排掉了再逐级降级，保证总有一个地址可用
+  const preferred = candidates.find(url => !isPcdnUrl(url) && !isBadCdnUrl(url))
+  if (preferred) return preferred
+  const nonPcdn = candidates.find(url => !isPcdnUrl(url))
+  if (nonPcdn) {
+    logger.warn('[Bilibili] 播放地址只剩实测会拒绝下载的镜像节点：' + nonPcdn)
+    return nonPcdn
+  }
   logger.warn('[Bilibili] 播放地址只给到 PCDN 节点，本机若解析不了该域名下载会失败：' + candidates[0])
   return candidates[0]!
 }

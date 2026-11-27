@@ -114,7 +114,7 @@ export const getBilibiliData = async (
   }
 
   const { cookie, options } = normalizeArgs(arg1, arg2)
-  const result = await runWithRequestGuard(
+  const requestOnce = async (): Promise<unknown> => await runWithRequestGuard(
     async signal => await fetcher(options, cookie, {
       ...buildRequestConfig(),
       signal
@@ -124,6 +124,13 @@ export const getBilibiliData = async (
       maxRetries: Config.request?.amagiMaxRetries
     }
   )
+  let result = await requestOnce()
+  // -352 是 B站 的风控（UA 或 wbi 参数不合法），实测多为瞬时：同一请求隔一会儿再打就过。
+  // 推送一轮要连查好几个 UP主，撞上就整轮跳过太亏，所以这里补一次带退避的重试。
+  if (isPlainRecord(result) && result.success === false && String(result.message) === '-352') {
+    await new Promise(resolve => setTimeout(resolve, 800))
+    result = await requestOnce()
+  }
   // amagi 7.0 成功响应是 {success:true,...} 且无 code 字段，补回 6.x 的 code:200 语义
   if (isPlainRecord(result) && result.code === undefined && result.success === true) {
     return { ...result, code: 200, message: typeof result.message === 'string' ? result.message : '获取成功' }
