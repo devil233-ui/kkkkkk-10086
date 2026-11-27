@@ -17,7 +17,7 @@ type BilibiliFetcherMethod = (
 /** 传给 fetcher 的请求配置 */
 export interface BilibiliRequestConfig {
   timeout: number
-  headers: { 'User-Agent'?: string }
+  headers: Record<string, string>
   signal?: AbortSignal
   proxy: false | {
     host: string
@@ -66,12 +66,51 @@ const buildRequestConfig = (): BilibiliRequestConfig => ({
   // 客户端提示自相矛盾（B站 gaia 风控正看这个）；值为 undefined 时更糟，spread 之后
   // headers['User-Agent'] 是显式 undefined，axios 会发自己的 UA 或不带 UA。
   headers: {
-    ...buildUserAgentHeader('bilibili')
+    ...buildUserAgentHeader('bilibili'),
+    // gaia 风控会校验跨站请求提示：少了这一组，space 域的接口直接回 -352。
+    // 实测同一 cookie 补上这 5 个头（外加 buvid3）后，原本必失败的主页也能拿到数据。
+    Origin: 'https://space.bilibili.com',
+    Referer: 'https://space.bilibili.com/',
+    'Sec-Fetch-Site': 'same-site',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Dest': 'empty'
   },
   proxy: Config.request?.proxy?.switch
     ? { host: Config.request.proxy.host, port: Number(Config.request.proxy.port), protocol: Config.request.proxy.protocol, auth: Config.request.proxy.auth }
     : false
 })
+
+/**
+ * B站 gaia 风控还会看 `buvid3` 指纹，而配置里那份 cookie 通常只有 SESSDATA / bili_jct
+ * 这几个键。这里按需向 spi 接口取一枚并缓存，只拼在请求用的副本上，不改用户配置。
+ */
+let cachedBuvid3: { value: string, fetchedAt: number } | undefined
+const BUVID3_TTL_MS = 6 * 60 * 60 * 1000
+
+const resolveBuvid3 = async (): Promise<string> => {
+  if (cachedBuvid3 && Date.now() - cachedBuvid3.fetchedAt < BUVID3_TTL_MS) return cachedBuvid3.value
+  try {
+    const response = await fetch('https://api.bilibili.com/x/frontend/finger/spi', {
+      headers: { ...buildUserAgentHeader('bilibili') }
+    })
+    const payload = await response.json() as { data?: { b_3?: string } }
+    const value = payload?.data?.b_3
+    if (value) {
+      cachedBuvid3 = { value, fetchedAt: Date.now() }
+      return value
+    }
+  } catch (error) {
+    logger.warn(`[Bilibili] 获取 buvid3 指纹失败: ${String(error)}`)
+  }
+  return ''
+}
+
+const withFingerprintCookie = async (cookie: string): Promise<string> => {
+  if (cookie.includes('buvid3=')) return cookie
+  const buvid3 = await resolveBuvid3()
+  if (!buvid3) return cookie
+  return cookie ? `${cookie}; buvid3=${buvid3}` : `buvid3=${buvid3}`
+}
 
 const normalizeArgs = (
   arg1?: string | Record<string, unknown>,
@@ -114,8 +153,10 @@ export const getBilibiliData = async (
   }
 
   const { cookie, options } = normalizeArgs(arg1, arg2)
+  // gaia 风控要求带 buvid3 指纹；只影响本次请求，用户的 cookie 配置保持不变
+  const requestCookie = await withFingerprintCookie(cookie)
   const requestOnce = async (): Promise<unknown> => await runWithRequestGuard(
-    async signal => await fetcher(options, cookie, {
+    async signal => await fetcher(options, requestCookie, {
       ...buildRequestConfig(),
       signal
     }),
