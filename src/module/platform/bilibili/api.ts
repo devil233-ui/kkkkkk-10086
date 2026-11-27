@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module'
 import Config from '@/module/utils/Config'
-import { BilibiliMethodToFetcher } from '@/module/platform/common/amagiMethodMap'
+import { BilibiliMethodToFetcher, bilibiliErrorCodeMap } from '@/module/platform/common/amagiMethodMap'
 import { buildUserAgentHeader } from '@/module/platform/common/userAgent'
 import { DEFAULT_REQUEST_TIMEOUT_MS, runWithRequestGuard } from '@/module/utils/RequestGuard'
 
@@ -127,6 +127,23 @@ export const getBilibiliData = async (
   // amagi 7.0 成功响应是 {success:true,...} 且无 code 字段，补回 6.x 的 code:200 语义
   if (isPlainRecord(result) && result.code === undefined && result.success === true) {
     return { ...result, code: 200, message: typeof result.message === 'string' ? result.message : '获取成功' }
+  }
+  // amagi 7.0 失败响应是 {success:false, error, message:"-352"}：既没有 code 也没有 data。
+  // 原样往上返，调用方会死在 `xxx.data.data` 上抛 TypeError，把真正的原因（风控/参数错误）盖掉。
+  // 这里补回 6.x 的失败形态：code 归一成 B 站错误码数字，message 走错误码表。
+  if (isPlainRecord(result) && result.success === false) {
+    const parsed = Number.parseInt(String(result.message ?? ''), 10)
+    const code = Number.isFinite(parsed) ? parsed : -1
+    const mapped = bilibiliErrorCodeMap[String(code) as keyof typeof bilibiliErrorCodeMap]
+    const errorField = result.error as { message?: string } | string | undefined
+    const detail = typeof errorField === 'string'
+      ? errorField
+      : (errorField?.message ?? '')
+    return {
+      ...result,
+      code,
+      message: mapped ? `${mapped}（${code}）` : (detail || `B站接口返回失败（${code}）`)
+    }
   }
   return result
 }
