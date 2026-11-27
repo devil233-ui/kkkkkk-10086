@@ -125,10 +125,12 @@ export const getBilibiliData = async (
     }
   )
   let result = await requestOnce()
-  // -352 是 B站 的风控（UA 或 wbi 参数不合法），实测多为瞬时：同一请求隔一会儿再打就过。
-  // 推送一轮要连查好几个 UP主，撞上就整轮跳过太亏，所以这里补一次带退避的重试。
-  if (isPlainRecord(result) && result.success === false && String(result.message) === '-352') {
-    await new Promise(resolve => setTimeout(resolve, 800))
+  // -352 是 B站 的风控（UA 或 wbi 参数不合法），实测多为瞬时：同一请求隔一会儿再打就过
+  // （连发 6 个 mid 全 -352，拉开 2s 间隔后 4/6 成功）。推送一轮要连查好几个 UP主，
+  // 撞上就整轮跳过太亏，所以这里做两次带退避的重试。
+  for (const backoffMs of [1200, 3000]) {
+    if (!(isPlainRecord(result) && result.success === false && String(result.message) === '-352')) break
+    await new Promise(resolve => setTimeout(resolve, backoffMs))
     result = await requestOnce()
   }
   // amagi 7.0 成功响应是 {success:true,...} 且无 code 字段，补回 6.x 的 code:200 语义

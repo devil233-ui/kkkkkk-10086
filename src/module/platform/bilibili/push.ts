@@ -383,6 +383,20 @@ const bilibiliBaseHeaders = {
   Cookie: Config.cookies.bilibili
 }
 
+/**
+ * B站对短时间内的连续动态列表请求会回 -352 风控。
+ *
+ * 实测：6 个 UP主 连发无间隔 → 6/6 全部 -352；拉开 2s 间隔 → 4/6 成功。
+ * 所以一轮里逐个 UP主 之间强制留出最小间隔，配合 api 层的退避重试一起用。
+ */
+const BILIBILI_REQUEST_MIN_INTERVAL_MS = 1500
+let lastBilibiliRequestAt = 0
+const throttleBilibiliRequest = async (): Promise<void> => {
+  const waitMs = BILIBILI_REQUEST_MIN_INTERVAL_MS - (Date.now() - lastBilibiliRequestAt)
+  if (waitMs > 0) await new Promise(resolve => setTimeout(resolve, waitMs))
+  lastBilibiliRequestAt = Date.now()
+}
+
 const DEFAULT_BILIBILI_PUSH_TYPES = ['video', 'draw', 'word', 'live', 'forward', 'article'] as const
 type BilibiliPushType = typeof DEFAULT_BILIBILI_PUSH_TYPES[number]
 
@@ -1330,8 +1344,7 @@ export class Bilibilipush extends Base {
     }
   }
 
-  async getDynamicList (userList: BilibiliPushConfigItem[]): Promise<{ willbepushlist: WillBePushList }> {
-    const directLiveItems = await this.getDirectLivePushItems(userList)
+  async getDynamicList (userList: BilibiliPushConfigItem[]): Promise<{ willbepushlist: WillBePushList }> {    const directLiveItems = await this.getDirectLivePushItems(userList)
     /** @type {WillBePushList} */
     const willbepushlist: WillBePushList = { ...directLiveItems.willBePushList }
 
@@ -1348,6 +1361,7 @@ export class Bilibilipush extends Base {
           if (allowedDynamicTypes.size === 0) continue
           logger.debug(`[Bilibili 推送] 开始获取UP: ${item.remark}（${item.host_mid}） 的动态列表，推送类型：${pushTypes.join(', ')}`)
           this.pushContext = { groupWithBot: item.group_id }
+          await throttleBilibiliRequest()
           const dynamic_list = asAmagiResponse<BiliUserDynamic>(await this.amagi.getBilibiliData('用户主页动态列表数据', { host_mid: item.host_mid, typeMode: 'strict' }))
           if (dynamic_list.data.data.items.length > 0) {
             // 遍历接口返回的视频列表
