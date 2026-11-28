@@ -478,6 +478,12 @@ export class Base {
                 })
                 throw riskError
               }
+              // 定时推送不要逐次弹接口错误卡：与抖音分支保持一致的抑制开关。
+              // 原来这里没有这层判断，B站每撞一次 -352 就给主人私聊一张 5MB 的
+              // handlerError 卡片，一天几十张；而这些失败大多是瞬时的。
+              if (Object.keys(event ?? {}).length === 0 && self.suppressScheduledApiErrorCards) {
+                throw new Error(getApiErrorMessage(result))
+              }
               const img = await buildApiErrorImage('bilibili', String(property), result, event, self.pushContext)
               if (Object.keys(event ?? {}).length === 0) {
                 await sendMasterMessage('bilibili', img)
