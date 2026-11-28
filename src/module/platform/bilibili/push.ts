@@ -445,6 +445,15 @@ export class Bilibilipush extends Base {
   /** 本轮取数统计：一轮开始时清零，逐个 UP 累加，轮末交给 tracker 判定。 */
   private fetchOutcome: BilibiliFetchOutcome = { succeeded: 0, failed: 0 }
   /**
+   * 定时推送不要逐次弹接口错误卡（与抖音侧一致）。
+   *
+   * 原来每撞一次 -352 就给主人私聊一张「平台 bilibili / 接口 getBilibiliData」的
+   * 卡片，一天几十张，而这类失败大多是瞬时的、下一轮自己就恢复了。现在接口层错误
+   * 只写日志，真正需要人介入的情况（整轮所有 UP 都取不到数据）交给
+   * `recordScheduledFetchResult` 的连续失败告警。交互式解析有 event，不受它影响。
+   */
+  suppressScheduledApiErrorCards = true
+  /**
    * 构造函数
    * @param {*} [e] - 事件对象，定时任务触发时没有事件
    * @param {boolean} [force=false] - 是否强制推送
